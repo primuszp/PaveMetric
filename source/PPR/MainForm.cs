@@ -17,7 +17,6 @@ namespace PPR
             InitializeComponent();
 
             Load += new EventHandler(MainForm_Load);
-            drawingArea.Load += new EventHandler(drawingArea_Load);
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -210,11 +209,6 @@ namespace PPR
 
         }
 
-        void drawingArea_Load(object sender, EventArgs e)
-        {
-            ;
-        }
-
         void drawingArea_OnMouseMove(object sender, MouseMoveEventArgs e)
         {
             if (_project.ActualPhoto == null) return;
@@ -226,22 +220,6 @@ namespace PPR
 
                 Pos screenPosition2 = _project.ActualPhoto.PerspectiveCorrection.GetScreenPosition(realPosition);
                 label_Coords.Text += "   " + (screenPosition2.X).ToString("0.00") + " ; " + (screenPosition2.Y).ToString("0.00");
-            }
-        }
-
-        private void button_LoadImage_Click(object sender, EventArgs e)
-        {
-
-            return;
-
-            OpenFileDialog dialog = new OpenFileDialog();
-
-            dialog.Filter = "Képfájlok | *.jpg";
-
-            if (dialog.ShowDialog() == DialogResult.OK)
-            {
-                Bitmap bmp = new Bitmap(dialog.FileName);
-                drawingArea.Photo = bmp;
             }
         }
 

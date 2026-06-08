@@ -165,10 +165,12 @@ namespace PPR
                 return new Pos();
 
             PerspectiveCorrection correction = PavementPhoto.PerspectiveCorrection;
+            double w = Math.Max(1, photo.Width - 1);
+            double h = Math.Max(1, photo.Height - 1);
             return new Pos(
-                correction.PavementWidth * viewPosition.X / photo.Width,
+                correction.PavementWidth * viewPosition.X / w,
                 correction.TopViewFarRealY
-                    - (correction.TopViewFarRealY - correction.TopViewNearRealY) * viewPosition.Y / photo.Height);
+                    - (correction.TopViewFarRealY - correction.TopViewNearRealY) * viewPosition.Y / h);
         }
 
         public Pos RealToViewPosition(Pos realPosition)
@@ -180,9 +182,11 @@ namespace PPR
                 return new Pos();
 
             PerspectiveCorrection correction = PavementPhoto.PerspectiveCorrection;
+            double w = Math.Max(1, photo.Width - 1);
+            double h = Math.Max(1, photo.Height - 1);
             return new Pos(
-                photo.Width * realPosition.X / correction.PavementWidth,
-                photo.Height * (correction.TopViewFarRealY - realPosition.Y)
+                w * realPosition.X / correction.PavementWidth,
+                h * (correction.TopViewFarRealY - realPosition.Y)
                     / (correction.TopViewFarRealY - correction.TopViewNearRealY));
         }
 

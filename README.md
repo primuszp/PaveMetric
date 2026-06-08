@@ -51,9 +51,8 @@ The current defect model includes:
 ## Requirements
 
 - Windows
-- Visual Studio 2019 or newer
-- .NET Framework 4.8 Developer Pack
-- MSBuild for .NET Framework projects
+- Visual Studio 2022 or newer with the .NET desktop development workload
+- .NET 8 SDK
 
 ## Build
 
@@ -65,22 +64,22 @@ source/PPR.sln
 
 Then build the `PPR` project with the desired configuration.
 
-From a Visual Studio Developer PowerShell, the project can also be built with MSBuild:
+From PowerShell, the complete solution can be built with the .NET CLI:
 
 ```powershell
-msbuild source\PPR.sln /p:Configuration=Release /p:Platform="Any CPU"
+dotnet build source\PPR.sln -c Release
 ```
 
-If `msbuild` is not available on `PATH`, use the full Visual Studio MSBuild path, for example:
+Run the geometry regression checks with:
 
 ```powershell
-& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" source\PPR.sln /p:Configuration=Release /p:Platform="Any CPU"
+dotnet run --project source\PPR.GeometryTests\PPR.GeometryTests.csproj -c Release
 ```
 
 The built executable is generated under:
 
 ```text
-source/PPR/bin/Release/
+source/PPR/bin/Release/net8.0-windows/
 ```
 
 ## Basic Workflow
@@ -94,6 +93,17 @@ source/PPR/bin/Release/
 7. Add defect markings using the configured defect layers.
 8. Save the project as a `.ppr` file.
 9. Export defect reports or rendered defect images as needed.
+
+## Defect Editing
+
+- Activate a defect layer, then drag on the pavement image to create a defect rectangle.
+- Press `Escape` to return to selection mode.
+- Click a visible defect to select it.
+- Drag a corner handle to resize the selected defect.
+- Press `Delete` to remove the selected defect.
+- Press `Ctrl+Z` to undo.
+- Press `Ctrl+Y` or `Ctrl+Shift+Z` to redo.
+- After perspective normalization, use the `Felülnézet` toolbar button to switch between the original perspective image and a rectified top-down view.
 
 ## Input Conventions
 
@@ -121,4 +131,4 @@ These files are generated locally and should not be committed.
 
 ## Project Status
 
-This is a legacy .NET Framework Windows Forms codebase. The current cleanup keeps the original application structure intact while making the repository suitable for GitHub hosting and future maintenance.
+The application has been migrated from .NET Framework 4.8 to an SDK-style .NET 8 Windows Forms project. The original desktop workflow and `.ppr` project format remain intact.

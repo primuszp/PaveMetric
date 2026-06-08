@@ -440,7 +440,7 @@ namespace PPR
 
         private void DrawLine(Line line, Graphics graphics)
         {
-            var pen = new Pen(line.LineColor, (float)line.LineWidth);
+            using var pen = new Pen(line.LineColor, (float)line.LineWidth);
 
             var x1 = (float)line.P0.X;
             var y1 = (float)line.P0.Y;
@@ -448,8 +448,6 @@ namespace PPR
             var y2 = (float)line.P1.Y;
 
             graphics.DrawLine(pen, x1, y1, x2, y2);
-
-            pen.Dispose();
         }
 
         private void DrawLines(PavementPhoto photo, Graphics graphics)
@@ -544,7 +542,11 @@ namespace PPR
                 var dinf = Directory.CreateDirectory(Path.Combine(ProjectPath, "Errors"));
                 var file = Path.Combine(ProjectPath, photo.PhotoFileName + ".jpg");
 
-                var bmp = new Bitmap(file);
+                using var bmp = new Bitmap(file);
+                using var graphics = Graphics.FromImage(bmp);
+                graphics.SmoothingMode = SmoothingMode.HighQuality;
+                DrawLines(photo, graphics);
+                var hasVisibleErrors = false;
 
                 foreach (var myError in photo.Errors)
                 {
@@ -583,21 +585,14 @@ namespace PPR
 
                     if (on)
                     {
-                        using (var graphics = Graphics.FromImage(bmp))
-                        {
-                            graphics.SmoothingMode = SmoothingMode.HighQuality;
-
-                            DrawLines(photo, graphics);
-
-                            var brush = new SolidBrush(areaColor);
-                            graphics.FillPolygon(brush, points);
-
-                            bmp.Save(Path.Combine(dinf.FullName, photo.PhotoFileName + ".jpg"), ImageFormat.Jpeg);
-                            brush.Dispose();
-                        }
+                        using var brush = new SolidBrush(areaColor);
+                        graphics.FillPolygon(brush, points);
+                        hasVisibleErrors = true;
                     }
                 }
-                bmp.Dispose();
+
+                if (hasVisibleErrors)
+                    bmp.Save(Path.Combine(dinf.FullName, photo.PhotoFileName + ".jpg"), ImageFormat.Jpeg);
             }
         }
     }

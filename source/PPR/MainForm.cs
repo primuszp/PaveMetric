@@ -5,18 +5,24 @@ using System.Windows.Forms;
 using System.IO;
 using System.Xml;
 using System.Xml.Serialization;
+using System.Collections.Generic;
 
 namespace PPR
 {
     public partial class MainForm : Form
     {
         Project _project = new Project();
+        readonly Stack<EditOperation> _undoStack = new Stack<EditOperation>();
+        readonly Stack<EditOperation> _redoStack = new Stack<EditOperation>();
+        Bitmap _perspectiveBitmap;
+        Bitmap _topViewBitmap;
 
         public MainForm()
         {
             InitializeComponent();
 
             Load += new EventHandler(MainForm_Load);
+            FormClosed += MainForm_FormClosed;
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -33,6 +39,7 @@ namespace PPR
 
             drawingArea.OnDrawingAreaMouseMove += new DrawingArea.MouseMoveEventHandler(drawingArea_OnMouseMove);
             drawingArea.OnCommandStateChanged += new DrawingArea.CommandEventHAndler(drawingArea_OnCommandStateChanged);
+            drawingArea.ErrorEditCompleted += drawingArea_ErrorEditCompleted;
 
             ErrorLayerControl newLayer = new ErrorLayerControl(errorLayerGroup);
             errorLayerGroup.AddLayer(newLayer);
@@ -160,18 +167,30 @@ namespace PPR
                 {
                     double pavementWidth_2 = _project.ActualPhoto.PerspectiveCorrection.PavementWidth / 2.0;
                     double startSection = _project.ActualPhoto.Section;
-                    Pos realPos0 = _project.ActualPhoto.PerspectiveCorrection.GetRealPosition(drawingArea.AreaPos0);
-                    Pos realPos1 = _project.ActualPhoto.PerspectiveCorrection.GetRealPosition(drawingArea.AreaPos1);
+                    Pos realPos0 = drawingArea.ViewToRealPosition(drawingArea.AreaPos0);
+                    Pos realPos1 = drawingArea.ViewToRealPosition(drawingArea.AreaPos1);
                     drawingArea.ActualError.Left = Math.Min(realPos0.X, realPos1.X) - pavementWidth_2;
                     drawingArea.ActualError.Right = Math.Max(realPos0.X, realPos1.X) - pavementWidth_2;
                     drawingArea.ActualError.StartSection = Math.Min(realPos0.Y, realPos1.Y) + startSection;
                     drawingArea.ActualError.EndSection = Math.Max(realPos0.Y, realPos1.Y) + startSection;
-                    _project.ActualPhoto.Errors.Add(drawingArea.ActualError);
+                    if (drawingArea.ActualError.Right - drawingArea.ActualError.Left < 0.001
+                        || drawingArea.ActualError.EndSection - drawingArea.ActualError.StartSection < 0.001)
+                    {
+                        drawingArea.RenderNeeded = true;
+                        return;
+                    }
 
-                    drawingArea.Command = 10;
-                    ErrorCodes tempCode = drawingArea.ActualError.ErrorCode;
-                    drawingArea.ActualError = new SurfaceError();
-                    drawingArea.ActualError.ErrorCode = tempCode;
+                    SurfaceError addedError = drawingArea.ActualError;
+                    PavementPhoto photo = _project.ActualPhoto;
+                    int index = photo.Errors.Count;
+                    photo.Errors.Add(addedError);
+                    RecordOperation(
+                        () => photo.Errors.Remove(addedError),
+                        () => photo.Errors.Insert(Math.Min(index, photo.Errors.Count), addedError));
+
+                    drawingArea.Command = 0;
+                    drawingArea.SelectError(addedError);
+                    drawingArea.ActualError = null;
                 }
             }
 
@@ -181,7 +200,7 @@ namespace PPR
                 {
                     double pavementWidth_2 = _project.ActualPhoto.PerspectiveCorrection.PavementWidth / 2.0;
                     double startSection = _project.ActualPhoto.Section;
-                    Pos realPos = _project.ActualPhoto.PerspectiveCorrection.GetRealPosition(new Pos(e.MouseX, e.MouseY));
+                    Pos realPos = drawingArea.ViewToRealPosition(new Pos(e.MouseX, e.MouseY));
                     realPos.X -= pavementWidth_2;
                     realPos.Y += startSection;
                     SurfaceError deletedError = null;
@@ -201,12 +220,30 @@ namespace PPR
                     }
                     if (deletedError != null)
                     {
-                        _project.ActualPhoto.Errors.Remove(deletedError);
+                        PavementPhoto photo = _project.ActualPhoto;
+                        int index = photo.Errors.IndexOf(deletedError);
+                        photo.Errors.Remove(deletedError);
+                        RecordOperation(
+                            () => photo.Errors.Insert(Math.Min(index, photo.Errors.Count), deletedError),
+                            () => photo.Errors.Remove(deletedError));
                         drawingArea.RenderNeeded = true;
                     }
                 }
             }
 
+        }
+
+        void drawingArea_ErrorEditCompleted(object sender, ErrorEditEventArgs e)
+        {
+            if (e.Before == null || BoundsEqual(e.Before, e.After))
+                return;
+
+            SurfaceError error = e.Error;
+            SurfaceError before = e.Before.Clone();
+            SurfaceError after = e.After.Clone();
+            RecordOperation(
+                () => error.CopyBoundsFrom(before),
+                () => error.CopyBoundsFrom(after));
         }
 
         void drawingArea_OnMouseMove(object sender, MouseMoveEventArgs e)
@@ -215,11 +252,8 @@ namespace PPR
             Pos screenPosition = new Pos(e.MouseX, e.MouseY);
             if (_project.ActualPhoto.PerspectiveCorrection.Normalized)
             {
-                Pos realPosition = _project.ActualPhoto.PerspectiveCorrection.GetRealPosition(screenPosition);
+                Pos realPosition = drawingArea.ViewToRealPosition(screenPosition);
                 label_Coords.Text = realPosition.X.ToString("0.00") + " ; " + realPosition.Y.ToString("0.00");
-
-                Pos screenPosition2 = _project.ActualPhoto.PerspectiveCorrection.GetScreenPosition(realPosition);
-                label_Coords.Text += "   " + (screenPosition2.X).ToString("0.00") + " ; " + (screenPosition2.Y).ToString("0.00");
             }
         }
 
@@ -368,6 +402,7 @@ namespace PPR
             FolderBrowserDialog folderDialog = new FolderBrowserDialog();
             if (folderDialog.ShowDialog() == DialogResult.OK)
             {
+                ClearEditHistory();
                 _project.LoadPhotos(folderDialog.SelectedPath);
                 UpdateControls();
             }
@@ -401,6 +436,7 @@ namespace PPR
                 XmlTextReader reader = new XmlTextReader(dialog.FileName);
 
                 _project = (Project)serializer.Deserialize(reader);
+                ClearEditHistory();
                 reader.Close();
                 _project.MoveToFirstPhoto();
                 _project.ProjectFileName = dialog.FileName;
@@ -462,13 +498,17 @@ namespace PPR
         private void UpdateDrawing()
         {
             string fileName = "";
+            drawingArea.ClearErrorSelection();
+            SetTopView(false);
 
             if (_project.ActualPhoto != null)
             {
                 fileName = _project.ProjectPath + "\\" + _project.ActualPhoto.PhotoFileName + ".jpg";
-                Bitmap bmp = new Bitmap(fileName);
-                if (drawingArea.Photo != null) drawingArea.Photo.Dispose();
-                drawingArea.Photo = bmp;
+                _perspectiveBitmap?.Dispose();
+                _topViewBitmap?.Dispose();
+                _topViewBitmap = null;
+                _perspectiveBitmap = new Bitmap(fileName);
+                drawingArea.Photo = _perspectiveBitmap;
 
                 drawingArea.PavementPhoto = _project.ActualPhoto;
 
@@ -510,15 +550,18 @@ namespace PPR
                 if (_project.ActualPhoto.PerspectiveCorrection.Normalized)
                 {
                     DrawNet();
+                    button_ToggleView.Enabled = true;
                 }
                 else
                 {
                     drawingArea.ClearLines();
+                    button_ToggleView.Enabled = false;
                 }
             }
             else
             {
                 drawingArea.PavementPhoto = null;
+                button_ToggleView.Enabled = false;
             }
 
             drawingArea.RenderNeeded = true;
@@ -529,6 +572,7 @@ namespace PPR
             FolderBrowserDialog folderDialog = new FolderBrowserDialog();
             if (folderDialog.ShowDialog() == DialogResult.OK)
             {
+                ClearEditHistory();
                 _project.LoadPhotos(folderDialog.SelectedPath);
                 UpdateControls();
             }
@@ -611,6 +655,8 @@ namespace PPR
             _project.ActualPhoto.PerspectiveCorrection.PavementWidth = width;
 
             _project.ActualPhoto.PerspectiveCorrection.Normalize(lines, length, width);
+            _topViewBitmap?.Dispose();
+            _topViewBitmap = null;
 
             DrawNet();
 
@@ -620,6 +666,61 @@ namespace PPR
         private void button_Normalize_Click_1(object sender, EventArgs e)
         {
             Normalize();
+            button_ToggleView.Enabled = _project.ActualPhoto?.PerspectiveCorrection.Normalized == true;
+        }
+
+        private void button_ToggleView_Click(object sender, EventArgs e)
+        {
+            SetTopView(button_ToggleView.Checked);
+        }
+
+        private void SetTopView(bool enabled)
+        {
+            if (enabled && (_project.ActualPhoto == null || !_project.ActualPhoto.PerspectiveCorrection.Normalized))
+                enabled = false;
+
+            if (enabled && _topViewBitmap == null)
+                _topViewBitmap = _project.ActualPhoto.PerspectiveCorrection.CreateTopView(_perspectiveBitmap);
+
+            if (enabled && _topViewBitmap == null)
+            {
+                button_ToggleView.Checked = false;
+                MessageBox.Show(
+                    "A felülnézet nem készíthető el. Ellenőrizd, hogy a közeli/távoli határ és mindkét útszél helyesen van kijelölve az aktuális képen.",
+                    "Érvénytelen perspektívageometria",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                enabled = false;
+            }
+
+            drawingArea.TopViewEnabled = enabled;
+            drawingArea.Photo = enabled ? _topViewBitmap : _perspectiveBitmap;
+            if (enabled)
+                drawingArea.FitImageToView();
+            else
+                drawingArea.ResetView();
+            button_ToggleView.Checked = enabled;
+            button_ToggleView.Text = enabled ? "Perspektíva" : "Felülnézet";
+
+            button_FarDistance.Enabled = !enabled;
+            button_NearDistance.Enabled = !enabled;
+            button_LeftEdge.Enabled = !enabled;
+            button_RightEdge.Enabled = !enabled;
+            button_Normalize.Enabled = !enabled;
+            button_Measure.Enabled = !enabled;
+
+            if (enabled)
+                drawingArea.Lines.Clear();
+            else if (_project.ActualPhoto?.PerspectiveCorrection.Normalized == true)
+                DrawNet();
+
+            drawingArea.RenderNeeded = true;
+        }
+
+        private void MainForm_FormClosed(object sender, FormClosedEventArgs e)
+        {
+            _topViewBitmap?.Dispose();
+            _perspectiveBitmap?.Dispose();
         }
 
         private void button_Previous_Click(object sender, EventArgs e)
@@ -662,10 +763,32 @@ namespace PPR
 
         private void MainForm_KeyDown(object sender, KeyEventArgs e)
         {
+            if (e.Control && e.KeyCode == Keys.Z)
+            {
+                if (e.Shift)
+                    Redo();
+                else
+                    Undo();
+
+                e.SuppressKeyPress = true;
+                return;
+            }
+
+            if (e.Control && e.KeyCode == Keys.Y)
+            {
+                Redo();
+                e.SuppressKeyPress = true;
+                return;
+            }
+
             switch (e.KeyCode)
             {
                 case Keys.Escape:
                     drawingArea.Command = 0;
+                    break;
+                case Keys.Delete:
+                    DeleteSelectedError();
+                    e.SuppressKeyPress = true;
                     break;
                 case Keys.PageDown:
                 case Keys.Space:
@@ -883,6 +1006,83 @@ namespace PPR
         private void toolStripButton1_Click(object sender, EventArgs e)
         {
             _project.ExportTechnology("techno.txt");
+        }
+
+        private void DeleteSelectedError()
+        {
+            SurfaceError error = drawingArea.SelectedError;
+            PavementPhoto photo = _project.ActualPhoto;
+            if (error == null || photo == null)
+                return;
+
+            int index = photo.Errors.IndexOf(error);
+            if (index < 0)
+                return;
+
+            photo.Errors.RemoveAt(index);
+            drawingArea.ClearErrorSelection();
+            RecordOperation(
+                () => photo.Errors.Insert(Math.Min(index, photo.Errors.Count), error),
+                () => photo.Errors.Remove(error));
+        }
+
+        private void RecordOperation(Action undo, Action redo)
+        {
+            _undoStack.Push(new EditOperation(undo, redo));
+            _redoStack.Clear();
+            drawingArea.RenderNeeded = true;
+        }
+
+        private void ClearEditHistory()
+        {
+            _undoStack.Clear();
+            _redoStack.Clear();
+            drawingArea.ClearErrorSelection();
+        }
+
+        private void Undo()
+        {
+            if (_undoStack.Count == 0)
+                return;
+
+            EditOperation operation = _undoStack.Pop();
+            operation.Undo();
+            _redoStack.Push(operation);
+            drawingArea.ClearErrorSelection();
+            drawingArea.RenderNeeded = true;
+        }
+
+        private void Redo()
+        {
+            if (_redoStack.Count == 0)
+                return;
+
+            EditOperation operation = _redoStack.Pop();
+            operation.Redo();
+            _undoStack.Push(operation);
+            drawingArea.ClearErrorSelection();
+            drawingArea.RenderNeeded = true;
+        }
+
+        private static bool BoundsEqual(SurfaceError first, SurfaceError second)
+        {
+            const double tolerance = 1e-9;
+            return Math.Abs(first.Left - second.Left) < tolerance
+                && Math.Abs(first.Right - second.Right) < tolerance
+                && Math.Abs(first.StartSection - second.StartSection) < tolerance
+                && Math.Abs(first.EndSection - second.EndSection) < tolerance;
+        }
+
+        private sealed class EditOperation
+        {
+            public Action Undo { get; }
+            public Action Redo { get; }
+
+            public EditOperation(Action undo, Action redo)
+            {
+                Undo = undo;
+                Redo = redo;
+            }
         }
     }
 }

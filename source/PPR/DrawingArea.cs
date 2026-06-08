@@ -8,8 +8,8 @@ namespace PPR
 {
     public partial class DrawingArea : UserControl
     {
-        public Graphics controlDC;
-        public Image controlBitmap;
+        private Graphics controlDC;
+        private Bitmap controlBitmap;
 
         double x0 = 0.0;
         double y0 = 0.0;
@@ -30,6 +30,10 @@ namespace PPR
         private Image photo = null;
         private Line measure_ruler = null;
         private MouseButtons mouseButton = MouseButtons.None;
+        private int activeErrorHandle = -1;
+        private SurfaceError errorBeforeEdit;
+        private const int ErrorHandleSize = 9;
+        private bool topViewEnabled;
 
         public List<Line> Lines = new List<Line>();
         public List<ErrorLayerControl> ErrorLayers = new List<ErrorLayerControl>();
@@ -44,11 +48,20 @@ namespace PPR
             {
                 command = value;
                 subCommand = 0;
+                if (command != 0)
+                    ClearErrorSelection();
             }
         }
 
-        Timer renderTimer;
-        public bool RenderNeeded = false;
+        public bool RenderNeeded
+        {
+            get => false;
+            set
+            {
+                if (value)
+                    Invalidate();
+            }
+        }
 
         public Image Photo
         {
@@ -67,32 +80,47 @@ namespace PPR
 
         public delegate void CommandEventHAndler(object sender, CommandEventArgs e);
         public event CommandEventHAndler OnCommandStateChanged;
+        public event EventHandler<ErrorEditEventArgs> ErrorEditCompleted;
+
+        public SurfaceError SelectedError { get; private set; }
+        public bool TopViewEnabled
+        {
+            get => topViewEnabled;
+            set
+            {
+                topViewEnabled = value;
+                ClearErrorSelection();
+                Invalidate();
+            }
+        }
 
         public DrawingArea()
         {
             InitializeComponent();
+            SetStyle(ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.UserPaint, true);
             Resize += new EventHandler(DrawingArea_Resize);
             MouseDown += new MouseEventHandler(DrawingArea_MouseDown);
             MouseUp += new MouseEventHandler(DrawingArea_MouseUp);
             MouseWheel += new MouseEventHandler(DrawingArea_MouseWheel);
             MouseMove += new MouseEventHandler(DrawingArea_MouseMove);
             Load += new EventHandler(DrawingArea_Load);
+            Disposed += new EventHandler(DrawingArea_Disposed);
         }
 
         void DrawingArea_Load(object sender, EventArgs e)
         {
-            renderTimer = new Timer();
-            renderTimer.Tick += new EventHandler(renderTimer_Tick);
-            renderTimer.Interval = 40;
-            renderTimer.Start();
-
             ClearLines();
+            Invalidate();
         }
 
         public void ClearLines()
         {
             Lines.Clear();
-            for (int i = 0; i < 4; i++) Lines.Add(new Line());
+            for (int i = 0; i < 4; i++)
+                Lines.Add(new Line());
+
             Lines[0].LineColor = Color.LightGreen;
             Lines[0].LineWidth = 2;
             Lines[1].LineColor = Color.LightGreen;
@@ -103,18 +131,80 @@ namespace PPR
             Lines[3].LineWidth = 2;
         }
 
-        void renderTimer_Tick(object sender, EventArgs e)
+        public void ResetView()
         {
-            if (RenderNeeded)
-            {
-                RenderNeeded = false;
+            x0 = 0.0;
+            y0 = 0.0;
+            zoom = 1.0;
+            Invalidate();
+        }
 
-                Render();
+        public void FitImageToView()
+        {
+            if (photo == null || Width <= 0 || Height <= 0)
+            {
+                ResetView();
+                return;
             }
+
+            zoom = Math.Min((double)Width / photo.Width, (double)Height / photo.Height);
+            if (zoom <= 0.0 || double.IsNaN(zoom) || double.IsInfinity(zoom))
+                zoom = 1.0;
+
+            x0 = -(Width / zoom - photo.Width) / 2.0;
+            y0 = -(Height / zoom - photo.Height) / 2.0;
+            Invalidate();
+        }
+
+        public Pos ViewToRealPosition(Pos viewPosition)
+        {
+            if (!topViewEnabled)
+                return PavementPhoto?.PerspectiveCorrection.GetRealPosition(viewPosition) ?? new Pos();
+
+            if (PavementPhoto == null || photo == null)
+                return new Pos();
+
+            PerspectiveCorrection correction = PavementPhoto.PerspectiveCorrection;
+            return new Pos(
+                correction.PavementWidth * viewPosition.X / photo.Width,
+                correction.TopViewFarRealY
+                    - (correction.TopViewFarRealY - correction.TopViewNearRealY) * viewPosition.Y / photo.Height);
+        }
+
+        public Pos RealToViewPosition(Pos realPosition)
+        {
+            if (!topViewEnabled)
+                return PavementPhoto?.PerspectiveCorrection.GetScreenPosition(realPosition) ?? new Pos();
+
+            if (PavementPhoto == null || photo == null)
+                return new Pos();
+
+            PerspectiveCorrection correction = PavementPhoto.PerspectiveCorrection;
+            return new Pos(
+                photo.Width * realPosition.X / correction.PavementWidth,
+                photo.Height * (correction.TopViewFarRealY - realPosition.Y)
+                    / (correction.TopViewFarRealY - correction.TopViewNearRealY));
         }
 
         void DrawingArea_MouseUp(object sender, MouseEventArgs e)
         {
+            if (mouseButton == MouseButtons.Left && activeErrorHandle >= 0 && SelectedError != null)
+            {
+                ErrorEditCompleted?.Invoke(this, new ErrorEditEventArgs(
+                    SelectedError,
+                    errorBeforeEdit,
+                    SelectedError.Clone()));
+            }
+            else if (mouseButton == MouseButtons.Left && command == 10 && subCommand == 1)
+            {
+                AreaPos1.X = x0 + e.X / zoom;
+                AreaPos1.Y = y0 + e.Y / zoom;
+                subCommand = 0;
+                RaiseCommandStateChanged(10, 1, x0 + e.X / zoom, y0 + e.Y / zoom);
+            }
+
+            activeErrorHandle = -1;
+            errorBeforeEdit = null;
             mouseButton = MouseButtons.None;
         }
 
@@ -129,6 +219,16 @@ namespace PPR
                     if (OnDrawingAreaMouseMove != null)
                     {
                         OnDrawingAreaMouseMove(this, new MouseMoveEventArgs(x_Mouse, y_Mouse));
+                    }
+
+                    if (command == 0)
+                    {
+                        int hoveredHandle = HitTestSelectedHandle(e.Location);
+                        Cursor = hoveredHandle == 0 || hoveredHandle == 2
+                            ? Cursors.SizeNWSE
+                            : hoveredHandle == 1 || hoveredHandle == 3
+                                ? Cursors.SizeNESW
+                                : Cursors.Default;
                     }
 
                     switch (command)
@@ -174,6 +274,19 @@ namespace PPR
                     y0 = y0_MouseDown - dy / zoom;
                     RenderNeeded = true;
                     break;
+                case MouseButtons.Left:
+                    if (activeErrorHandle >= 0 && SelectedError != null)
+                    {
+                        UpdateSelectedErrorFromHandle(activeErrorHandle, x0 + e.X / zoom, y0 + e.Y / zoom);
+                        RenderNeeded = true;
+                    }
+                    else if (command == 10 && subCommand == 1)
+                    {
+                        AreaPos1.X = x0 + e.X / zoom;
+                        AreaPos1.Y = y0 + e.Y / zoom;
+                        RenderNeeded = true;
+                    }
+                    break;
             }
         }
 
@@ -189,6 +302,7 @@ namespace PPR
             }
 
             if (zoom > 2.0) zoom = 2.0;
+            if (zoom < 0.05) zoom = 0.05;
 
             x0 = x_Mouse - e.X / zoom;
             y0 = y_Mouse - e.Y / zoom;
@@ -205,9 +319,26 @@ namespace PPR
             switch (mouseButton)
             {
                 case MouseButtons.Left:
+                    x_Mouse = x0 + e.X / zoom;
+                    y_Mouse = y0 + e.Y / zoom;
+
+                    if (command == 0 && PavementPhoto != null)
+                    {
+                        activeErrorHandle = HitTestSelectedHandle(e.Location);
+                        if (activeErrorHandle >= 0 && SelectedError != null)
+                        {
+                            errorBeforeEdit = SelectedError.Clone();
+                            break;
+                        }
+
+                        SelectErrorAt(x_Mouse, y_Mouse);
+                        break;
+                    }
+
                     switch (command)
                     {
                         case 1:
+                            if (photo == null) break;
                             Lines[0].P0.X = 0.0;
                             Lines[0].P1.X = photo.Width;
                             Lines[0].P0.Y = y_Mouse;
@@ -216,6 +347,7 @@ namespace PPR
                             command = 0;
                             break;
                         case 2:
+                            if (photo == null) break;
                             Lines[1].P0.X = 0.0;
                             Lines[1].P1.X = photo.Width;
                             Lines[1].P0.Y = y_Mouse;
@@ -274,18 +406,11 @@ namespace PPR
                             RenderNeeded = true;
                             break;
                         case 10:
-                            if (subCommand == 0)
-                            {
-                                subCommand = 1;
-                                AreaPos0.X = x_Mouse;
-                                AreaPos0.Y = y_Mouse;
-                                AreaPos1.X = x_Mouse;
-                                AreaPos1.Y = y_Mouse;
-                            }
-                            else
-                            {
-                                subCommand = 0;
-                            }
+                            subCommand = 1;
+                            AreaPos0.X = x_Mouse;
+                            AreaPos0.Y = y_Mouse;
+                            AreaPos1.X = x_Mouse;
+                            AreaPos1.Y = y_Mouse;
                             break;
                     }
 
@@ -309,29 +434,57 @@ namespace PPR
 
         }
 
+        private void RaiseCommandStateChanged(int currentCommand, int currentSubCommand, double mouseX, double mouseY)
+        {
+            OnCommandStateChanged?.Invoke(this, new CommandEventArgs
+            {
+                Command = currentCommand,
+                SubCommand = currentSubCommand,
+                MouseX = mouseX,
+                MouseY = mouseY
+            });
+        }
+
+        public void SelectError(SurfaceError error)
+        {
+            SelectedError = error;
+            Invalidate();
+        }
+
+        public void ClearErrorSelection()
+        {
+            SelectedError = null;
+            activeErrorHandle = -1;
+            errorBeforeEdit = null;
+            Invalidate();
+        }
+
         private void DrawingArea_Resize(object sender, EventArgs e)
         {
             if (Width > 0 && Height > 0)
             {
                 SetDrawingArea();
-                Render();
+                Invalidate();
             }
         }
 
         public void SetDrawingArea()
         {
-            if (controlBitmap != null) controlBitmap.Dispose();
+            controlDC?.Dispose();
+            controlBitmap?.Dispose();
 
-            controlBitmap = new Bitmap(this.Width, this.Height, this.CreateGraphics());
+            controlBitmap = new Bitmap(Width, Height);
             controlDC = Graphics.FromImage(controlBitmap);
             controlDC.SmoothingMode = SmoothingMode.AntiAlias;
+            controlDC.InterpolationMode = InterpolationMode.HighQualityBilinear;
         }
 
-        private void RefreshControl()
+        protected override void OnPaint(PaintEventArgs e)
         {
-            Graphics windowDC = this.CreateGraphics();
-            windowDC.DrawImage(controlBitmap, 0, 0);
-            windowDC.Dispose();
+            base.OnPaint(e);
+            RenderFrame();
+            if (controlBitmap != null)
+                e.Graphics.DrawImageUnscaled(controlBitmap, 0, 0);
         }
 
         private void Clear()
@@ -356,10 +509,10 @@ namespace PPR
                     double farReal = myError.EndSection - startSection;
 
                     Pos[] screenPositions = new Pos[4];
-                    screenPositions[0] = PavementPhoto.PerspectiveCorrection.GetScreenPosition(new Pos(leftReal, nearReal));
-                    screenPositions[1] = PavementPhoto.PerspectiveCorrection.GetScreenPosition(new Pos(rightReal, nearReal));
-                    screenPositions[2] = PavementPhoto.PerspectiveCorrection.GetScreenPosition(new Pos(rightReal, farReal));
-                    screenPositions[3] = PavementPhoto.PerspectiveCorrection.GetScreenPosition(new Pos(leftReal, farReal));
+                    screenPositions[0] = RealToViewPosition(new Pos(leftReal, nearReal));
+                    screenPositions[1] = RealToViewPosition(new Pos(rightReal, nearReal));
+                    screenPositions[2] = RealToViewPosition(new Pos(rightReal, farReal));
+                    screenPositions[3] = RealToViewPosition(new Pos(leftReal, farReal));
 
                     Point[] points = new Point[4];
                     for (int i = 0; i < 4; i++)
@@ -382,16 +535,22 @@ namespace PPR
 
                     if (on)
                     {
-                        SolidBrush brush = new SolidBrush(areaColor);
+                        using SolidBrush brush = new SolidBrush(areaColor);
                         controlDC.FillPolygon(brush, points);
 
-                        brush.Dispose();
+                        if (ReferenceEquals(myError, SelectedError))
+                            DrawErrorSelection(points);
                     }
                 }
             }
         }
 
         public void Render()
+        {
+            Invalidate();
+        }
+
+        private void RenderFrame()
         {
             Clear();
 
@@ -420,7 +579,6 @@ namespace PPR
                 RenderErrors();
             }
 
-            RefreshControl();
         }
 
         public void DrawSelectedArea()
@@ -428,7 +586,7 @@ namespace PPR
             if (PavementPhoto == null) return;
             if (!PavementPhoto.PerspectiveCorrection.Normalized) return;
 
-            SolidBrush brush = new SolidBrush(AreaColor);
+            using SolidBrush brush = new SolidBrush(AreaColor);
             Point[] points = new Point[4];
 
             Pos nearPos;
@@ -445,8 +603,8 @@ namespace PPR
                 farPos = AreaPos0;
             }
 
-            Pos nearPosReal = PavementPhoto.PerspectiveCorrection.GetRealPosition(nearPos);
-            Pos farPosReal = PavementPhoto.PerspectiveCorrection.GetRealPosition(farPos);
+            Pos nearPosReal = ViewToRealPosition(nearPos);
+            Pos farPosReal = ViewToRealPosition(farPos);
 
             double xMinReal = Math.Min(nearPosReal.X, farPosReal.X);
             double xMaxReal = Math.Max(nearPosReal.X, farPosReal.X);
@@ -458,16 +616,11 @@ namespace PPR
             cornersReal[2] = new Pos(xMaxReal, farPosReal.Y);
             cornersReal[3] = new Pos(xMinReal, farPosReal.Y);
 
-            if ((farPosReal.Y - nearPosReal.Y) > 2.0)
-            {
-                ;
-            }
-
             Pos[] corners = new Pos[4];
 
             for (int i = 0; i < 4; i++)
             {
-                corners[i] = PavementPhoto.PerspectiveCorrection.GetScreenPosition(cornersReal[i]);
+                corners[i] = RealToViewPosition(cornersReal[i]);
                 points[i].X = (int)((corners[i].X - x0) * zoom);
                 points[i].Y = (int)((corners[i].Y - y0) * zoom);
             }
@@ -475,9 +628,120 @@ namespace PPR
             controlDC.FillPolygon(brush, points);
         }
 
+        private void SelectErrorAt(double screenX, double screenY)
+        {
+            SelectedError = null;
+            if (PavementPhoto == null || !PavementPhoto.PerspectiveCorrection.Normalized)
+                return;
+
+            double pavementWidth2 = PavementPhoto.PerspectiveCorrection.PavementWidth / 2.0;
+            Pos real = ViewToRealPosition(new Pos(screenX, screenY));
+            real.X -= pavementWidth2;
+            real.Y += PavementPhoto.Section;
+
+            for (int i = PavementPhoto.Errors.Count - 1; i >= 0; i--)
+            {
+                SurfaceError error = PavementPhoto.Errors[i];
+                if (IsErrorVisible(error)
+                    && real.X >= error.Left && real.X <= error.Right
+                    && real.Y >= error.StartSection && real.Y <= error.EndSection)
+                {
+                    SelectedError = error;
+                    break;
+                }
+            }
+
+            Invalidate();
+        }
+
+        private bool IsErrorVisible(SurfaceError error)
+        {
+            foreach (ErrorLayerControl layer in ErrorLayers)
+            {
+                if (layer.ErrorCode == error.ErrorCode)
+                    return layer.IsVisible;
+            }
+
+            return false;
+        }
+
+        private void UpdateSelectedErrorFromHandle(int handle, double screenX, double screenY)
+        {
+            double pavementWidth2 = PavementPhoto.PerspectiveCorrection.PavementWidth / 2.0;
+            Pos real = ViewToRealPosition(new Pos(screenX, screenY));
+            double x = real.X - pavementWidth2;
+            double y = real.Y + PavementPhoto.Section;
+            const double minimumSize = 0.001;
+
+            if (handle == 0 || handle == 3)
+                SelectedError.Left = Math.Min(x, SelectedError.Right - minimumSize);
+            else
+                SelectedError.Right = Math.Max(x, SelectedError.Left + minimumSize);
+
+            if (handle == 0 || handle == 1)
+                SelectedError.StartSection = Math.Min(y, SelectedError.EndSection - minimumSize);
+            else
+                SelectedError.EndSection = Math.Max(y, SelectedError.StartSection + minimumSize);
+        }
+
+        private int HitTestSelectedHandle(Point mousePoint)
+        {
+            if (SelectedError == null)
+                return -1;
+
+            Point[] points = GetErrorScreenPoints(SelectedError);
+            int radius = ErrorHandleSize;
+            for (int i = 0; i < points.Length; i++)
+            {
+                if (Math.Abs(mousePoint.X - points[i].X) <= radius
+                    && Math.Abs(mousePoint.Y - points[i].Y) <= radius)
+                    return i;
+            }
+
+            return -1;
+        }
+
+        private Point[] GetErrorScreenPoints(SurfaceError error)
+        {
+            double pavementWidth2 = PavementPhoto.PerspectiveCorrection.PavementWidth / 2.0;
+            double startSection = PavementPhoto.Section;
+            Pos[] realCorners =
+            {
+                new Pos(error.Left + pavementWidth2, error.StartSection - startSection),
+                new Pos(error.Right + pavementWidth2, error.StartSection - startSection),
+                new Pos(error.Right + pavementWidth2, error.EndSection - startSection),
+                new Pos(error.Left + pavementWidth2, error.EndSection - startSection)
+            };
+
+            Point[] points = new Point[4];
+            for (int i = 0; i < points.Length; i++)
+            {
+                Pos screen = RealToViewPosition(realCorners[i]);
+                points[i] = new Point(
+                    (int)((screen.X - x0) * zoom),
+                    (int)((screen.Y - y0) * zoom));
+            }
+
+            return points;
+        }
+
+        private void DrawErrorSelection(Point[] points)
+        {
+            using Pen outline = new Pen(Color.White, 2.0f) { DashStyle = DashStyle.Dash };
+            controlDC.DrawPolygon(outline, points);
+
+            int half = ErrorHandleSize / 2;
+            foreach (Point point in points)
+            {
+                Rectangle handle = new Rectangle(point.X - half, point.Y - half, ErrorHandleSize, ErrorHandleSize);
+                controlDC.FillRectangle(Brushes.White, handle);
+                controlDC.DrawRectangle(Pens.Black, handle);
+            }
+        }
+
         public void DrawLine(Line line)
         {
-            Pen pen = new Pen(line.LineColor, (float)line.LineWidth);
+            using Pen pen = new Pen(line.LineColor, (float)line.LineWidth);
 
             float x1 = (float)((line.P0.X - x0) * zoom);
             float y1 = (float)((line.P0.Y - y0) * zoom);
@@ -485,8 +749,6 @@ namespace PPR
             float y2 = (float)((line.P1.Y - y0) * zoom);
 
             controlDC.DrawLine(pen, x1, y1, x2, y2);
-
-            pen.Dispose();
         }
 
         public void DrawImage(Image image, double X, double Y)
@@ -507,13 +769,21 @@ namespace PPR
             {
                 Pos start = measure_ruler.P0;
                 Pos end = measure_ruler.P1;
-                double measure_length = Math.Sqrt(Math.Pow(end.Y - start.Y, 2) + Math.Pow(end.X - start.X, 2));
-                //double measure_length = Math.Abs(end.X - start.X);
+                double measure_length = Math.Sqrt(
+                    (end.Y - start.Y) * (end.Y - start.Y) +
+                    (end.X - start.X) * (end.X - start.X));
                 MeasureAction?.Invoke(measure_length);
                 measure_ruler = null;
             }
             else MeasureAction?.Invoke(0);
-        } 
+        }
+
+        private void DrawingArea_Disposed(object sender, EventArgs e)
+        {
+            controlDC?.Dispose();
+            controlBitmap?.Dispose();
+            photo?.Dispose();
+        }
     }
 
     public class MouseMoveEventArgs : EventArgs
@@ -534,5 +804,19 @@ namespace PPR
         public int SubCommand = 0;
         public double MouseX = 0;
         public double MouseY = 0;
+    }
+
+    public class ErrorEditEventArgs : EventArgs
+    {
+        public SurfaceError Error { get; }
+        public SurfaceError Before { get; }
+        public SurfaceError After { get; }
+
+        public ErrorEditEventArgs(SurfaceError error, SurfaceError before, SurfaceError after)
+        {
+            Error = error;
+            Before = before;
+            After = after;
+        }
     }
 }

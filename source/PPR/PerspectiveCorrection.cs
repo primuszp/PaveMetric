@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
+using System.Xml.Serialization;
 
 namespace PPR
 {
@@ -18,6 +20,8 @@ namespace PPR
         public bool Normalized { get; set; }
         public int RowCount { get; set; }
         public int ColCount { get; set; }
+        [XmlIgnore] public double TopViewNearRealY { get; private set; }
+        [XmlIgnore] public double TopViewFarRealY { get; private set; }
 
         public PerspectiveCorrection()
         {
@@ -34,9 +38,9 @@ namespace PPR
         {
             List<Line> lines = new List<Line>();
 
-            double nearPixelWidth = RightEdge.P0.X - LeftEdge.P0.X;
-            double farPixelWidth = RightEdge.P1.X - LeftEdge.P1.X;
-            double pixelLength = Math.Abs(LeftEdge.DeltaY);
+            if (!HasValidGeometry() || nRows < 1 || nCols < 1)
+                return lines.ToArray();
+
             double netDeltaX = PavementWidth / (double)nCols;
 
             for (int i = 1; i < nCols; i++)
@@ -46,32 +50,23 @@ namespace PPR
                 Line newLine = new Line();
                 newLine.LineWidth = 1.5;
                 newLine.LineColor = Color.FromArgb(128, 255, 255, 255);
-                newLine.P0.X = LeftEdge.P0.X + x * nearPixelWidth / PavementWidth;
-                newLine.P0.Y = NearDistance;
-                newLine.P1.X = LeftEdge.P1.X + x * farPixelWidth / PavementWidth;
-                newLine.P1.Y = FarDistance;
+                newLine.P0 = GetScreenPosition(new Pos(x, 0.0));
+                newLine.P1 = GetScreenPosition(new Pos(x, Length));
 
                 lines.Add(newLine);
             }
 
-            double ctga = Math.Abs(LeftEdge.DeltaX / LeftEdge.DeltaY);
-            double ctgb = Math.Abs(RightEdge.DeltaX / RightEdge.DeltaY);
-            double c = (farPixelWidth / PavementWidth) / (pixelLength / Length);
             double netDeltaY = Length / (double)nRows;
 
             for (int i = 1; i < nRows; i++)
             {
                 double y = i * netDeltaY;
-                double l = nearPixelWidth / (c * PavementWidth / y + ctga + ctgb);
 
                 Line newLine = new Line();
                 newLine.LineWidth = 1.5;
                 newLine.LineColor = Color.FromArgb(128, 255, 255, 255);
-                newLine.P0.X = LeftEdge.P0.X + l * ctga;
-                newLine.P1.X = RightEdge.P0.X - l * ctgb;
-
-                newLine.P0.Y = NearDistance - l;
-                newLine.P1.Y = NearDistance - l;
+                newLine.P0 = GetScreenPosition(new Pos(0.0, y));
+                newLine.P1 = GetScreenPosition(new Pos(PavementWidth, y));
 
                 lines.Add(newLine);
             }
@@ -81,6 +76,10 @@ namespace PPR
 
         public void Normalize(Line[] lines, double length, double width)
         {
+            Normalized = false;
+            if (lines == null || lines.Length < 4 || length <= 0.0 || width <= 0.0)
+                return;
+
             Line farLine = lines[0];
             Line nearLine = lines[1];
             Line leftLine = lines[2];
@@ -88,6 +87,11 @@ namespace PPR
 
             double nearDistance = nearLine.P0.Y;
             double farDistance = farLine.P0.Y;
+            if (Math.Abs(nearDistance - farDistance) < 1e-9
+                || Math.Abs(leftLine.DeltaY) < 1e-9
+                || Math.Abs(rightLine.DeltaY) < 1e-9)
+                return;
+
             Length = length;
             PavementWidth = width;
             NearDistance = nearDistance;
@@ -159,48 +163,296 @@ namespace PPR
 
         public Pos GetRealPosition(Pos ScreenPosition)
         {
-            Pos realPos = new Pos();
+            if (!HasValidGeometry())
+                return new Pos();
 
-            double dxFar = RightEdge.P1.X - LeftEdge.P1.X;
-            double dxNear = RightEdge.P0.X - LeftEdge.P0.X;
-            double dySection = NearDistance - FarDistance;
-            double c = (dxFar * Length) / (PavementWidth * dySection);
+            double t = (NearDistance - ScreenPosition.Y) / (NearDistance - FarDistance);
+            double leftX = Lerp(LeftEdge.P0.X, LeftEdge.P1.X, t);
+            double rightX = Lerp(RightEdge.P0.X, RightEdge.P1.X, t);
+            double screenWidth = rightX - leftX;
+            double farWidth = RightEdge.P1.X - LeftEdge.P1.X;
 
-            double dy = NearDistance - ScreenPosition.Y;
-            double dxLeft = LeftEdge.DeltaX * dy / dySection;
-            double dxRight = RightEdge.DeltaX * dy / dySection;
-            double dx = dxNear - dxLeft + dxRight;
+            if (Math.Abs(screenWidth) < 1e-9)
+                return new Pos();
 
-            double dxx = ScreenPosition.X - (LeftEdge.P0.X + dxLeft);
-            realPos.X = PavementWidth * dxx / dx;
-            realPos.Y = c * dy * PavementWidth / dx;
-
-            return realPos;
+            return new Pos(
+                PavementWidth * (ScreenPosition.X - leftX) / screenWidth,
+                farWidth * Length * t / screenWidth);
         }
 
         public Pos GetScreenPosition(Pos RealPosition)
         {
-            Pos screenPos = new Pos();
+            if (!HasValidGeometry())
+                return new Pos();
 
-            double dxFar = RightEdge.P1.X - LeftEdge.P1.X;
-            double dxNear = RightEdge.P0.X - LeftEdge.P0.X;
-            double dySection = NearDistance - FarDistance;
+            double nearWidth = RightEdge.P0.X - LeftEdge.P0.X;
+            double farWidth = RightEdge.P1.X - LeftEdge.P1.X;
+            double denominator = farWidth * Length - RealPosition.Y * (farWidth - nearWidth);
 
-            double ctga = Math.Abs(LeftEdge.DeltaX / LeftEdge.DeltaY);
-            double ctgb = Math.Abs(RightEdge.DeltaX / RightEdge.DeltaY);
-            double c = (dxFar / PavementWidth) / (dySection / Length);
+            if (Math.Abs(denominator) < 1e-9)
+                return new Pos();
 
-            double dy = dxNear / (c * PavementWidth / RealPosition.Y + ctga + ctgb);
-            screenPos.Y = NearDistance - dy;
+            double t = RealPosition.Y * nearWidth / denominator;
+            double leftX = Lerp(LeftEdge.P0.X, LeftEdge.P1.X, t);
+            double rightX = Lerp(RightEdge.P0.X, RightEdge.P1.X, t);
 
-            double dxLeft = LeftEdge.DeltaX * dy / dySection;
-            double dxRight = RightEdge.DeltaX * dy / dySection;
-            double dx = dxNear - dxLeft + dxRight;
+            return new Pos(
+                Lerp(leftX, rightX, RealPosition.X / PavementWidth),
+                Lerp(NearDistance, FarDistance, t));
+        }
 
-            double dxx = dx * RealPosition.X / PavementWidth;
-            screenPos.X = LeftEdge.P0.X + dxLeft + dxx;
+        private bool HasValidGeometry()
+        {
+            return PavementWidth > 0.0
+                && Length > 0.0
+                && Math.Abs(NearDistance - FarDistance) > 1e-9
+                && Math.Abs(RightEdge.P0.X - LeftEdge.P0.X) > 1e-9
+                && Math.Abs(RightEdge.P1.X - LeftEdge.P1.X) > 1e-9;
+        }
 
-            return screenPos;
+        private static double Lerp(double start, double end, double amount)
+        {
+            return start + (end - start) * amount;
+        }
+
+        public Bitmap CreateTopView(Bitmap source, int pixelsPerMeter = 100)
+        {
+            if (!TryGetOrderedScreenCorners(source, out Pos[] corners))
+                return null;
+
+            int width = Math.Max(1, (int)Math.Round(PavementWidth * pixelsPerMeter));
+            double visibleLength = TopViewFarRealY - TopViewNearRealY;
+            int height = Math.Max(1, (int)Math.Round(visibleLength * pixelsPerMeter));
+            Bitmap result = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+            using Bitmap source32 = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
+            using (Graphics graphics = Graphics.FromImage(source32))
+                graphics.DrawImageUnscaled(source, 0, 0);
+
+            Rectangle sourceRect = new Rectangle(0, 0, source32.Width, source32.Height);
+            Rectangle resultRect = new Rectangle(0, 0, width, height);
+            BitmapData sourceData = source32.LockBits(sourceRect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            BitmapData resultData = result.LockBits(resultRect, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+            double[] homography = CreateUnitSquareToScreenHomography(corners);
+
+            try
+            {
+                unsafe
+                {
+                    byte* sourceBase = (byte*)sourceData.Scan0;
+                    byte* resultBase = (byte*)resultData.Scan0;
+
+                    for (int y = 0; y < height; y++)
+                    {
+                        double v = (double)y / Math.Max(1, height - 1);
+                        byte* resultRow = resultBase + y * resultData.Stride;
+
+                        for (int x = 0; x < width; x++)
+                        {
+                            double u = (double)x / Math.Max(1, width - 1);
+                            Pos screen = ApplyHomography(homography, u, v);
+                            SampleBilinear(sourceBase, sourceData.Stride, source32.Width, source32.Height, screen.X, screen.Y, resultRow + x * 4);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                source32.UnlockBits(sourceData);
+                result.UnlockBits(resultData);
+            }
+
+            return result;
+        }
+
+        private bool TryGetOrderedScreenCorners(Bitmap source, out Pos[] corners)
+        {
+            corners = null;
+            if (!HasValidGeometry() || source == null)
+                return false;
+
+            double visibleFarY = Math.Max(0.0, Math.Min(FarDistance, NearDistance));
+            double visibleNearY = Math.Min(source.Height - 1.0, Math.Max(FarDistance, NearDistance));
+            if (visibleNearY <= visibleFarY)
+                return false;
+
+            Pos farLeft = GetLinePositionAtY(LeftEdge, visibleFarY);
+            Pos farRight = GetLinePositionAtY(RightEdge, visibleFarY);
+            Pos nearLeft = GetLinePositionAtY(LeftEdge, visibleNearY);
+            Pos nearRight = GetLinePositionAtY(RightEdge, visibleNearY);
+
+            SortLeftRight(ref nearLeft, ref nearRight);
+            SortLeftRight(ref farLeft, ref farRight);
+
+            Pos farCenter = new Pos((farLeft.X + farRight.X) / 2.0, visibleFarY);
+            Pos nearCenter = new Pos((nearLeft.X + nearRight.X) / 2.0, visibleNearY);
+            TopViewFarRealY = GetRealPosition(farCenter).Y;
+            TopViewNearRealY = GetRealPosition(nearCenter).Y;
+            if (TopViewFarRealY < TopViewNearRealY)
+            {
+                double temporary = TopViewFarRealY;
+                TopViewFarRealY = TopViewNearRealY;
+                TopViewNearRealY = temporary;
+            }
+
+            corners = new Pos[]
+            {
+                farLeft,
+                farRight,
+                nearRight,
+                nearLeft
+            };
+
+            foreach (Pos corner in corners)
+            {
+                if (!double.IsFinite(corner.X) || !double.IsFinite(corner.Y))
+                    return false;
+            }
+
+            double area = 0.0;
+            for (int i = 0; i < corners.Length; i++)
+            {
+                Pos current = corners[i];
+                Pos next = corners[(i + 1) % corners.Length];
+                area += current.X * next.Y - next.X * current.Y;
+            }
+
+            return Math.Abs(area) >= source.Width * source.Height * 0.005;
+        }
+
+        private static double[] CreateUnitSquareToScreenHomography(Pos[] destination)
+        {
+            double[,] matrix = new double[8, 9];
+            double[] sourceX = { 0.0, 1.0, 1.0, 0.0 };
+            double[] sourceY = { 0.0, 0.0, 1.0, 1.0 };
+
+            for (int i = 0; i < 4; i++)
+            {
+                double u = sourceX[i];
+                double v = sourceY[i];
+                double x = destination[i].X;
+                double y = destination[i].Y;
+                int row = i * 2;
+
+                matrix[row, 0] = u;
+                matrix[row, 1] = v;
+                matrix[row, 2] = 1.0;
+                matrix[row, 6] = -u * x;
+                matrix[row, 7] = -v * x;
+                matrix[row, 8] = x;
+
+                matrix[row + 1, 3] = u;
+                matrix[row + 1, 4] = v;
+                matrix[row + 1, 5] = 1.0;
+                matrix[row + 1, 6] = -u * y;
+                matrix[row + 1, 7] = -v * y;
+                matrix[row + 1, 8] = y;
+            }
+
+            return SolveLinearSystem(matrix);
+        }
+
+        private static Pos GetLinePositionAtY(Line line, double y)
+        {
+            double deltaY = line.P1.Y - line.P0.Y;
+            if (Math.Abs(deltaY) < 1e-9)
+                return new Pos(line.P0.X, y);
+
+            double amount = (y - line.P0.Y) / deltaY;
+            return new Pos(Lerp(line.P0.X, line.P1.X, amount), y);
+        }
+
+        private static void SortLeftRight(ref Pos first, ref Pos second)
+        {
+            if (first.X <= second.X)
+                return;
+
+            Pos temporary = first;
+            first = second;
+            second = temporary;
+        }
+
+        private static Pos ApplyHomography(double[] h, double u, double v)
+        {
+            double denominator = h[6] * u + h[7] * v + 1.0;
+            return new Pos(
+                (h[0] * u + h[1] * v + h[2]) / denominator,
+                (h[3] * u + h[4] * v + h[5]) / denominator);
+        }
+
+        private static double[] SolveLinearSystem(double[,] matrix)
+        {
+            const int size = 8;
+            for (int column = 0; column < size; column++)
+            {
+                int pivot = column;
+                for (int row = column + 1; row < size; row++)
+                {
+                    if (Math.Abs(matrix[row, column]) > Math.Abs(matrix[pivot, column]))
+                        pivot = row;
+                }
+
+                for (int item = column; item <= size; item++)
+                {
+                    double temp = matrix[column, item];
+                    matrix[column, item] = matrix[pivot, item];
+                    matrix[pivot, item] = temp;
+                }
+
+                double divisor = matrix[column, column];
+                for (int item = column; item <= size; item++)
+                    matrix[column, item] /= divisor;
+
+                for (int row = 0; row < size; row++)
+                {
+                    if (row == column)
+                        continue;
+
+                    double factor = matrix[row, column];
+                    for (int item = column; item <= size; item++)
+                        matrix[row, item] -= factor * matrix[column, item];
+                }
+            }
+
+            double[] result = new double[size];
+            for (int i = 0; i < size; i++)
+                result[i] = matrix[i, size];
+
+            return result;
+        }
+
+        private static unsafe void SampleBilinear(
+            byte* source,
+            int stride,
+            int width,
+            int height,
+            double x,
+            double y,
+            byte* target)
+        {
+            if (x < 0.0 || y < 0.0 || x >= width - 1 || y >= height - 1)
+            {
+                target[0] = 0;
+                target[1] = 0;
+                target[2] = 0;
+                target[3] = 255;
+                return;
+            }
+
+            int x0 = (int)x;
+            int y0 = (int)y;
+            double fx = x - x0;
+            double fy = y - y0;
+            byte* p00 = source + y0 * stride + x0 * 4;
+            byte* p10 = p00 + 4;
+            byte* p01 = p00 + stride;
+            byte* p11 = p01 + 4;
+
+            for (int channel = 0; channel < 4; channel++)
+            {
+                double top = p00[channel] + (p10[channel] - p00[channel]) * fx;
+                double bottom = p01[channel] + (p11[channel] - p01[channel]) * fx;
+                target[channel] = (byte)(top + (bottom - top) * fy);
+            }
         }
     }
 }

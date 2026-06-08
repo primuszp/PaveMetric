@@ -57,6 +57,7 @@
             this.button_LeftEdge = new System.Windows.Forms.ToolStripButton();
             this.button_RightEdge = new System.Windows.Forms.ToolStripButton();
             this.button_Normalize = new System.Windows.Forms.ToolStripButton();
+            this.button_ToggleView = new System.Windows.Forms.ToolStripButton();
             this.toolStripSeparator4 = new System.Windows.Forms.ToolStripSeparator();
             this.button_Measure = new System.Windows.Forms.ToolStripButton();
             this.label_Measure = new System.Windows.Forms.ToolStripLabel();
@@ -273,6 +274,7 @@
             this.button_LeftEdge,
             this.button_RightEdge,
             this.button_Normalize,
+            this.button_ToggleView,
             this.toolStripSeparator4,
             this.button_Measure,
             this.label_Measure,
@@ -386,6 +388,17 @@
             this.button_Normalize.Size = new System.Drawing.Size(92, 30);
             this.button_Normalize.Text = "Normalizál";
             this.button_Normalize.Click += new System.EventHandler(this.button_Normalize_Click_1);
+            //
+            // button_ToggleView
+            //
+            this.button_ToggleView.CheckOnClick = true;
+            this.button_ToggleView.DisplayStyle = System.Windows.Forms.ToolStripItemDisplayStyle.Text;
+            this.button_ToggleView.Enabled = false;
+            this.button_ToggleView.Name = "button_ToggleView";
+            this.button_ToggleView.Size = new System.Drawing.Size(75, 30);
+            this.button_ToggleView.Text = "Felülnézet";
+            this.button_ToggleView.ToolTipText = "Váltás perspektivikus és felülnézeti kép között";
+            this.button_ToggleView.Click += new System.EventHandler(this.button_ToggleView_Click);
             // 
             // toolStripSeparator4
             // 
@@ -673,6 +686,7 @@
         private System.Windows.Forms.ToolStripButton button_LeftEdge;
         private System.Windows.Forms.ToolStripButton button_RightEdge;
         private System.Windows.Forms.ToolStripButton button_Normalize;
+        private System.Windows.Forms.ToolStripButton button_ToggleView;
         private System.Windows.Forms.SplitContainer splitContainer1;
         private ErrorLayerGroup errorLayerGroup;
         private System.Windows.Forms.ToolStripButton button_FirstNonNormalized;

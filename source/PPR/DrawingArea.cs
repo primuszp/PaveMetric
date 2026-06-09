@@ -305,7 +305,7 @@ namespace PPR
                 zoom /= 1.333;
             }
 
-            if (zoom > 2.0) zoom = 2.0;
+            if (zoom > 16.0) zoom = 16.0;
             if (zoom < 0.05) zoom = 0.05;
 
             x0 = x_Mouse - e.X / zoom;

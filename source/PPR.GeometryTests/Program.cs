@@ -16,6 +16,7 @@ RunTopViewWithEdgeCornersTest();
 RunTopViewWithExtrapolatedCornersTest();
 RunTopViewCornerMappingTest();
 RunPilisGeometryTest();
+RunAutomaticTopViewResolutionTest();
 if (pilisPhotoPath != null && pilisOutputPath != null)
     ExportPilisTopView(pilisPhotoPath, pilisOutputPath);
 
@@ -298,6 +299,18 @@ static void ExportPilisTopView(string photoPath, string outputPath)
     using Bitmap? topView = CreatePilisCorrection().CreateTopView(source, 100);
     Assert(topView != null, "Pilis 00+20 photo must generate a top view.");
     topView?.Save(outputPath);
+}
+
+static void RunAutomaticTopViewResolutionTest()
+{
+    using Bitmap source = new Bitmap(1200, 1100);
+    using Bitmap? topView = CreateCorrection(100, 400, 1100, 800).CreateTopView(source);
+    Assert(topView != null, "Automatic-resolution top view must be generated.");
+    if (topView == null) return;
+
+    long sourcePixels = (long)source.Width * source.Height;
+    long topViewPixels = (long)topView.Width * topView.Height;
+    Assert(topViewPixels >= sourcePixels, "Automatic top view must contain at least as many pixels as the source.");
 }
 
 static PerspectiveCorrection CreatePilisCorrection()

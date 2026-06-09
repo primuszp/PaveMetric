@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Threading.Tasks;
 using System.Xml.Serialization;
 
 namespace PPR
@@ -215,13 +216,20 @@ namespace PPR
             return start + (end - start) * amount;
         }
 
-        public Bitmap CreateTopView(Bitmap source, int pixelsPerMeter = 100)
+        public Bitmap CreateTopView(Bitmap source, int pixelsPerMeter = 0, bool sharpen = true)
         {
             if (!TryGetOrderedScreenCorners(source, out Pos[] screenCorners))
                 return null;
 
-            int width = Math.Max(1, (int)Math.Round(PavementWidth * pixelsPerMeter));
             double visibleLength = TopViewFarRealY - TopViewNearRealY;
+            if (pixelsPerMeter <= 0)
+            {
+                double sourcePixelCount = (double)source.Width * source.Height;
+                pixelsPerMeter = Math.Max(1, (int)Math.Ceiling(
+                    Math.Sqrt(sourcePixelCount / (PavementWidth * visibleLength))));
+            }
+
+            int width = Math.Max(1, (int)Math.Round(PavementWidth * pixelsPerMeter));
             int height = Math.Max(1, (int)Math.Round(visibleLength * pixelsPerMeter));
             double[] topViewToScreen = CreateUnitSquareToScreenHomography(screenCorners);
             if (topViewToScreen == null)
@@ -236,26 +244,31 @@ namespace PPR
             Rectangle resultRect = new Rectangle(0, 0, width, height);
             BitmapData sourceData = source32.LockBits(sourceRect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
             BitmapData resultData = result.LockBits(resultRect, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+            int sourceWidth = sourceRect.Width;
+            int sourceHeight = sourceRect.Height;
+            int sourceStride = sourceData.Stride;
+            int resultStride = resultData.Stride;
 
             try
             {
                 unsafe
                 {
-                    byte* sourceBase = (byte*)sourceData.Scan0;
-                    byte* resultBase = (byte*)resultData.Scan0;
-
-                    for (int y = 0; y < height; y++)
+                    nint sourceAddress = sourceData.Scan0;
+                    nint resultAddress = resultData.Scan0;
+                    Parallel.For(0, height, y =>
                     {
+                        byte* sourceBase = (byte*)sourceAddress;
+                        byte* resultBase = (byte*)resultAddress;
                         double v = (double)y / Math.Max(1, height - 1);
-                        byte* resultRow = resultBase + y * resultData.Stride;
+                        byte* resultRow = resultBase + y * resultStride;
 
                         for (int x = 0; x < width; x++)
                         {
                             double u = (double)x / Math.Max(1, width - 1);
                             Pos screen = ApplyHomography(topViewToScreen, u, v);
-                            SampleBilinear(sourceBase, sourceData.Stride, source32.Width, source32.Height, screen.X, screen.Y, resultRow + x * 4);
+                            SampleBilinear(sourceBase, sourceStride, sourceWidth, sourceHeight, screen.X, screen.Y, resultRow + x * 4);
                         }
-                    }
+                    });
                 }
             }
             finally
@@ -264,7 +277,62 @@ namespace PPR
                 result.UnlockBits(resultData);
             }
 
+            if (sharpen)
+                Sharpen(result);
+
             return result;
+        }
+
+        private static void Sharpen(Bitmap bitmap)
+        {
+            using Bitmap original = bitmap.Clone(
+                new Rectangle(0, 0, bitmap.Width, bitmap.Height),
+                PixelFormat.Format32bppArgb);
+            Rectangle rect = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+            BitmapData sourceData = original.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            BitmapData targetData = bitmap.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+            int width = rect.Width;
+            int height = rect.Height;
+            int sourceStride = sourceData.Stride;
+            int targetStride = targetData.Stride;
+
+            try
+            {
+                unsafe
+                {
+                    nint sourceAddress = sourceData.Scan0;
+                    nint targetAddress = targetData.Scan0;
+                    Parallel.For(1, height - 1, y =>
+                    {
+                        byte* source = (byte*)sourceAddress;
+                        byte* target = (byte*)targetAddress;
+                        byte* sourceRow = source + y * sourceStride;
+                        byte* targetRow = target + y * targetStride;
+
+                        for (int x = 1; x < width - 1; x++)
+                        {
+                            byte* center = sourceRow + x * 4;
+                            byte* left = center - 4;
+                            byte* right = center + 4;
+                            byte* top = center - sourceStride;
+                            byte* bottom = center + sourceStride;
+                            byte* output = targetRow + x * 4;
+
+                            for (int channel = 0; channel < 3; channel++)
+                            {
+                                int sharpened = center[channel] * 6
+                                    - left[channel] - right[channel] - top[channel] - bottom[channel];
+                                output[channel] = (byte)Math.Clamp(sharpened / 2, 0, 255);
+                            }
+                        }
+                    });
+                }
+            }
+            finally
+            {
+                original.UnlockBits(sourceData);
+                bitmap.UnlockBits(targetData);
+            }
         }
 
         private bool TryGetOrderedScreenCorners(Bitmap source, out Pos[] corners)

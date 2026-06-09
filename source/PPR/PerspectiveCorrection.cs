@@ -217,12 +217,14 @@ namespace PPR
 
         public Bitmap CreateTopView(Bitmap source, int pixelsPerMeter = 100)
         {
-            if (!TryGetOrderedScreenCorners(source, out Pos[] corners))
+            if (!HasValidGeometry() || source == null)
                 return null;
 
+            TopViewNearRealY = 0.0;
+            TopViewFarRealY = Length;
+
             int width = Math.Max(1, (int)Math.Round(PavementWidth * pixelsPerMeter));
-            double visibleLength = TopViewFarRealY - TopViewNearRealY;
-            int height = Math.Max(1, (int)Math.Round(visibleLength * pixelsPerMeter));
+            int height = Math.Max(1, (int)Math.Round(Length * pixelsPerMeter));
             Bitmap result = new Bitmap(width, height, PixelFormat.Format32bppArgb);
             using Bitmap source32 = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
             using (Graphics graphics = Graphics.FromImage(source32))
@@ -232,7 +234,6 @@ namespace PPR
             Rectangle resultRect = new Rectangle(0, 0, width, height);
             BitmapData sourceData = source32.LockBits(sourceRect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
             BitmapData resultData = result.LockBits(resultRect, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-            double[] homography = CreateUnitSquareToScreenHomography(corners);
 
             try
             {
@@ -243,13 +244,13 @@ namespace PPR
 
                     for (int y = 0; y < height; y++)
                     {
-                        double v = (double)y / Math.Max(1, height - 1);
+                        double realY = Length - (double)y / Math.Max(1, height - 1) * Length;
                         byte* resultRow = resultBase + y * resultData.Stride;
 
                         for (int x = 0; x < width; x++)
                         {
-                            double u = (double)x / Math.Max(1, width - 1);
-                            Pos screen = ApplyHomography(homography, u, v);
+                            double realX = (double)x / Math.Max(1, width - 1) * PavementWidth;
+                            Pos screen = GetScreenPosition(new Pos(realX, realY));
                             SampleBilinear(sourceBase, sourceData.Stride, source32.Width, source32.Height, screen.X, screen.Y, resultRow + x * 4);
                         }
                     }
@@ -272,6 +273,21 @@ namespace PPR
 
             double visibleFarY = Math.Max(0.0, Math.Min(FarDistance, NearDistance));
             double visibleNearY = Math.Min(source.Height - 1.0, Math.Max(FarDistance, NearDistance));
+            if (visibleNearY <= visibleFarY)
+                return false;
+
+            // When edge lines are drawn only in the visible portion of the photo and the near
+            // line is placed below the drawn endpoints, Normalize() extrapolates the near corners
+            // beyond the image boundaries. Limit visibleNearY to where both edges stay in-frame.
+            double leftNearX = GetLinePositionAtY(LeftEdge, visibleNearY).X;
+            double rightNearX = GetLinePositionAtY(RightEdge, visibleNearY).X;
+
+            if (leftNearX < 0.0)
+                visibleNearY = Math.Min(visibleNearY, GetXCrossY(LeftEdge, 0.0));
+            if (rightNearX >= source.Width)
+                visibleNearY = Math.Min(visibleNearY, GetXCrossY(RightEdge, source.Width - 1.0));
+
+            visibleNearY = Math.Max(visibleFarY, visibleNearY);
             if (visibleNearY <= visibleFarY)
                 return false;
 
@@ -361,6 +377,15 @@ namespace PPR
             return new Pos(Lerp(line.P0.X, line.P1.X, amount), y);
         }
 
+        private static double GetXCrossY(Line line, double targetX)
+        {
+            double deltaX = line.P1.X - line.P0.X;
+            if (Math.Abs(deltaX) < 1e-9)
+                return line.P0.Y;
+            double amount = (targetX - line.P0.X) / deltaX;
+            return line.P0.Y + (line.P1.Y - line.P0.Y) * amount;
+        }
+
         private static void SortLeftRight(ref Pos first, ref Pos second)
         {
             if (first.X <= second.X)
@@ -429,7 +454,7 @@ namespace PPR
             double y,
             byte* target)
         {
-            if (x < 0.0 || y < 0.0 || x >= width - 1 || y >= height - 1)
+            if (x < 0.0 || y < 0.0 || x >= width || y >= height)
             {
                 target[0] = 0;
                 target[1] = 0;
@@ -438,10 +463,12 @@ namespace PPR
                 return;
             }
 
-            int x0 = (int)x;
-            int y0 = (int)y;
-            double fx = x - x0;
-            double fy = y - y0;
+            int ix = (int)x;
+            int iy = (int)y;
+            double fx = x - ix;
+            double fy = y - iy;
+            int x0 = Math.Min(ix, width - 2);
+            int y0 = Math.Min(iy, height - 2);
             byte* p00 = source + y0 * stride + x0 * 4;
             byte* p10 = p00 + 4;
             byte* p01 = p00 + stride;

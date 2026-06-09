@@ -344,6 +344,49 @@ namespace PPR
             drawingArea.RenderNeeded = true;
         }
 
+        void DrawTopViewNet()
+        {
+            drawingArea.Lines.Clear();
+            if (_topViewBitmap == null) return;
+
+            var pc = _project.ActualPhoto.PerspectiveCorrection;
+            double nearY = pc.TopViewNearRealY;
+            double farY = pc.TopViewFarRealY;
+            double w = pc.PavementWidth;
+
+            Pos V(double x, double y) => drawingArea.RealToViewPosition(new Pos(x, y));
+
+            Line MakeLine(Pos p0, Pos p1, Color color, double lw = 1.5)
+            {
+                var line = new Line();
+                line.P0.X = p0.X; line.P0.Y = p0.Y;
+                line.P1.X = p1.X; line.P1.Y = p1.Y;
+                line.LineColor = color;
+                line.LineWidth = lw;
+                return line;
+            }
+
+            // Border
+            drawingArea.Lines.Add(MakeLine(V(0, farY), V(w, farY), Color.LightGreen, 2.0));
+            drawingArea.Lines.Add(MakeLine(V(0, nearY), V(w, nearY), Color.LightGreen, 2.0));
+            drawingArea.Lines.Add(MakeLine(V(0, nearY), V(0, farY), Color.Pink, 2.0));
+            drawingArea.Lines.Add(MakeLine(V(w, nearY), V(w, farY), Color.Pink, 2.0));
+
+            // Vertical grid lines — same real X positions as in perspective view
+            double dx = w / pc.ColCount;
+            for (int i = 1; i < pc.ColCount; i++)
+                drawingArea.Lines.Add(MakeLine(V(i * dx, nearY), V(i * dx, farY), Color.FromArgb(128, 255, 255, 255)));
+
+            // Horizontal grid lines — same real Y positions as in perspective view
+            double dy = pc.Length / pc.RowCount;
+            for (int i = 1; i < pc.RowCount; i++)
+            {
+                double y = i * dy;
+                if (y >= nearY && y <= farY)
+                    drawingArea.Lines.Add(MakeLine(V(0, y), V(w, y), Color.FromArgb(128, 255, 255, 255)));
+            }
+        }
+
         void DrawNet()
         {
             drawingArea.Lines.Clear();
@@ -710,7 +753,7 @@ namespace PPR
             button_Measure.Enabled = !enabled;
 
             if (enabled)
-                drawingArea.Lines.Clear();
+                DrawTopViewNet();
             else if (_project.ActualPhoto?.PerspectiveCorrection.Normalized == true)
                 DrawNet();
 

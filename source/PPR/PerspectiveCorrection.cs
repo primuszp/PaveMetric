@@ -217,14 +217,12 @@ namespace PPR
 
         public Bitmap CreateTopView(Bitmap source, int pixelsPerMeter = 100)
         {
-            if (!HasValidGeometry() || source == null)
+            if (!TryGetOrderedScreenCorners(source, out _))
                 return null;
 
-            TopViewNearRealY = 0.0;
-            TopViewFarRealY = Length;
-
             int width = Math.Max(1, (int)Math.Round(PavementWidth * pixelsPerMeter));
-            int height = Math.Max(1, (int)Math.Round(Length * pixelsPerMeter));
+            double visibleLength = TopViewFarRealY - TopViewNearRealY;
+            int height = Math.Max(1, (int)Math.Round(visibleLength * pixelsPerMeter));
             Bitmap result = new Bitmap(width, height, PixelFormat.Format32bppArgb);
             using Bitmap source32 = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
             using (Graphics graphics = Graphics.FromImage(source32))
@@ -244,7 +242,7 @@ namespace PPR
 
                     for (int y = 0; y < height; y++)
                     {
-                        double realY = Length - (double)y / Math.Max(1, height - 1) * Length;
+                        double realY = TopViewFarRealY - (double)y / Math.Max(1, height - 1) * visibleLength;
                         byte* resultRow = resultBase + y * resultData.Stride;
 
                         for (int x = 0; x < width; x++)

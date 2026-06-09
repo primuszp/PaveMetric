@@ -2,6 +2,8 @@ using PPR;
 using System.Drawing;
 
 const double tolerance = 1e-8;
+string? pilisPhotoPath = args.Length > 0 ? args[0] : null;
+string? pilisOutputPath = args.Length > 1 ? args[1] : null;
 
 RunRoundTripTest(CreateCorrection(100, 400, 1100, 800), "inward edges");
 RunRoundTripTest(CreateCorrection(400, 100, 800, 1100), "outward edges");
@@ -12,6 +14,10 @@ RunTopViewTest();
 RunTopViewWithReversedEdgesTest();
 RunTopViewWithEdgeCornersTest();
 RunTopViewWithExtrapolatedCornersTest();
+RunTopViewCornerMappingTest();
+RunPilisGeometryTest();
+if (pilisPhotoPath != null && pilisOutputPath != null)
+    ExportPilisTopView(pilisPhotoPath, pilisOutputPath);
 
 Console.WriteLine("All geometry checks passed.");
 
@@ -238,6 +244,82 @@ static void RunTopViewWithEdgeCornersTest()
 
     Console.WriteLine($"Edge corners test: {darkPixels} dark pixels in interior (expected 0)");
     Assert(darkPixels == 0, "Top view with edge-touching corners must not contain triangular gaps.");
+}
+
+static void RunTopViewCornerMappingTest()
+{
+    PerspectiveCorrection correction = CreateCorrection(100, 400, 1100, 800);
+    using Bitmap source = new Bitmap(1200, 1100);
+    using (Graphics graphics = Graphics.FromImage(source))
+    {
+        graphics.Clear(Color.Black);
+        graphics.FillPolygon(Brushes.Red, new Point[] { new Point(400, 100), new Point(800, 100), new Point(700, 550), new Point(250, 550) });
+        graphics.FillPolygon(Brushes.Blue, new Point[] { new Point(250, 550), new Point(700, 550), new Point(1100, 1000), new Point(100, 1000) });
+    }
+
+    using Bitmap? topView = correction.CreateTopView(source, 10);
+    Assert(topView != null, "Color-mapped top view must be generated.");
+    if (topView == null) return;
+
+    Color farCenter = topView.GetPixel(topView.Width / 2, 2);
+    Color nearCenter = topView.GetPixel(topView.Width / 2, topView.Height - 3);
+    Assert(farCenter.R > 200 && farCenter.B < 50, "Top of top view must map to the far side.");
+    Assert(nearCenter.B > 200 && nearCenter.R < 50, "Bottom of top view must map to the near side.");
+}
+
+static void RunPilisGeometryTest()
+{
+    PerspectiveCorrection correction = CreatePilisCorrection();
+
+    using Bitmap source = new Bitmap(4928, 3264);
+    using (Graphics graphics = Graphics.FromImage(source))
+        graphics.Clear(Color.White);
+    using Bitmap? topView = correction.CreateTopView(source, 10);
+    Assert(topView != null, "Pilis 00+20 geometry must generate a top view.");
+    if (topView == null) return;
+
+    int darkPixels = 0;
+    for (int y = 0; y < topView.Height; y++)
+    {
+        for (int x = 0; x < topView.Width; x++)
+        {
+            if (topView.GetPixel(x, y).R < 200)
+                darkPixels++;
+        }
+    }
+
+    double darkRatio = (double)darkPixels / (topView.Width * topView.Height);
+    Assert(darkRatio < 0.25, $"Pilis 00+20 top view maps too far outside the source ({darkRatio:P1} dark).");
+}
+
+static void ExportPilisTopView(string photoPath, string outputPath)
+{
+    using Bitmap source = new Bitmap(photoPath);
+    using Bitmap? topView = CreatePilisCorrection().CreateTopView(source, 100);
+    Assert(topView != null, "Pilis 00+20 photo must generate a top view.");
+    topView?.Save(outputPath);
+}
+
+static PerspectiveCorrection CreatePilisCorrection()
+{
+    return new PerspectiveCorrection
+    {
+        PavementWidth = 4.0,
+        Length = 10.0,
+        FarDistance = 93.27710422189011,
+        NearDistance = 2803.6972361435887,
+        Normalized = true,
+        LeftEdge = new Line
+        {
+            P0 = new Pos(-988.1802981505953, 2803.6972361435887),
+            P1 = new Pos(1799.6804089688671, 93.27710422189011)
+        },
+        RightEdge = new Line
+        {
+            P0 = new Pos(5558.725455766861, 2803.6972361435887),
+            P1 = new Pos(3228.982308665624, 93.27710422189011)
+        }
+    };
 }
 
 static void AssertClose(double expected, double actual, string message)

@@ -217,16 +217,20 @@ namespace PPR
 
         public Bitmap CreateTopView(Bitmap source, int pixelsPerMeter = 100)
         {
-            if (!TryGetOrderedScreenCorners(source, out _))
+            if (!TryGetOrderedScreenCorners(source, out Pos[] screenCorners))
                 return null;
 
             int width = Math.Max(1, (int)Math.Round(PavementWidth * pixelsPerMeter));
             double visibleLength = TopViewFarRealY - TopViewNearRealY;
             int height = Math.Max(1, (int)Math.Round(visibleLength * pixelsPerMeter));
+            double[] topViewToScreen = CreateUnitSquareToScreenHomography(screenCorners);
+            if (topViewToScreen == null)
+                return null;
+
             Bitmap result = new Bitmap(width, height, PixelFormat.Format32bppArgb);
             using Bitmap source32 = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
             using (Graphics graphics = Graphics.FromImage(source32))
-                graphics.DrawImageUnscaled(source, 0, 0);
+                graphics.DrawImage(source, new Rectangle(0, 0, source32.Width, source32.Height));
 
             Rectangle sourceRect = new Rectangle(0, 0, source32.Width, source32.Height);
             Rectangle resultRect = new Rectangle(0, 0, width, height);
@@ -242,13 +246,13 @@ namespace PPR
 
                     for (int y = 0; y < height; y++)
                     {
-                        double realY = TopViewFarRealY - (double)y / Math.Max(1, height - 1) * visibleLength;
+                        double v = (double)y / Math.Max(1, height - 1);
                         byte* resultRow = resultBase + y * resultData.Stride;
 
                         for (int x = 0; x < width; x++)
                         {
-                            double realX = (double)x / Math.Max(1, width - 1) * PavementWidth;
-                            Pos screen = GetScreenPosition(new Pos(realX, realY));
+                            double u = (double)x / Math.Max(1, width - 1);
+                            Pos screen = ApplyHomography(topViewToScreen, u, v);
                             SampleBilinear(sourceBase, sourceData.Stride, source32.Width, source32.Height, screen.X, screen.Y, resultRow + x * 4);
                         }
                     }
@@ -271,21 +275,6 @@ namespace PPR
 
             double visibleFarY = Math.Max(0.0, Math.Min(FarDistance, NearDistance));
             double visibleNearY = Math.Min(source.Height - 1.0, Math.Max(FarDistance, NearDistance));
-            if (visibleNearY <= visibleFarY)
-                return false;
-
-            // When edge lines are drawn only in the visible portion of the photo and the near
-            // line is placed below the drawn endpoints, Normalize() extrapolates the near corners
-            // beyond the image boundaries. Limit visibleNearY to where both edges stay in-frame.
-            double leftNearX = GetLinePositionAtY(LeftEdge, visibleNearY).X;
-            double rightNearX = GetLinePositionAtY(RightEdge, visibleNearY).X;
-
-            if (leftNearX < 0.0)
-                visibleNearY = Math.Min(visibleNearY, GetXCrossY(LeftEdge, 0.0));
-            if (rightNearX >= source.Width)
-                visibleNearY = Math.Min(visibleNearY, GetXCrossY(RightEdge, source.Width - 1.0));
-
-            visibleNearY = Math.Max(visibleFarY, visibleNearY);
             if (visibleNearY <= visibleFarY)
                 return false;
 
@@ -335,34 +324,35 @@ namespace PPR
 
         private static double[] CreateUnitSquareToScreenHomography(Pos[] destination)
         {
-            double[,] matrix = new double[8, 9];
-            double[] sourceX = { 0.0, 1.0, 1.0, 0.0 };
-            double[] sourceY = { 0.0, 0.0, 1.0, 1.0 };
+            Pos p0 = destination[0];
+            Pos p1 = destination[1];
+            Pos p2 = destination[2];
+            Pos p3 = destination[3];
 
-            for (int i = 0; i < 4; i++)
+            double dx1 = p1.X - p2.X;
+            double dx2 = p3.X - p2.X;
+            double dx3 = p0.X - p1.X + p2.X - p3.X;
+            double dy1 = p1.Y - p2.Y;
+            double dy2 = p3.Y - p2.Y;
+            double dy3 = p0.Y - p1.Y + p2.Y - p3.Y;
+            double denominator = dx1 * dy2 - dx2 * dy1;
+            if (Math.Abs(denominator) < 1e-12)
+                return null;
+
+            double g = (dx3 * dy2 - dx2 * dy3) / denominator;
+            double h = (dx1 * dy3 - dx3 * dy1) / denominator;
+
+            return new double[]
             {
-                double u = sourceX[i];
-                double v = sourceY[i];
-                double x = destination[i].X;
-                double y = destination[i].Y;
-                int row = i * 2;
-
-                matrix[row, 0] = u;
-                matrix[row, 1] = v;
-                matrix[row, 2] = 1.0;
-                matrix[row, 6] = -u * x;
-                matrix[row, 7] = -v * x;
-                matrix[row, 8] = x;
-
-                matrix[row + 1, 3] = u;
-                matrix[row + 1, 4] = v;
-                matrix[row + 1, 5] = 1.0;
-                matrix[row + 1, 6] = -u * y;
-                matrix[row + 1, 7] = -v * y;
-                matrix[row + 1, 8] = y;
-            }
-
-            return SolveLinearSystem(matrix);
+                p1.X - p0.X + g * p1.X,
+                p3.X - p0.X + h * p3.X,
+                p0.X,
+                p1.Y - p0.Y + g * p1.Y,
+                p3.Y - p0.Y + h * p3.Y,
+                p0.Y,
+                g,
+                h
+            };
         }
 
         private static Pos GetLinePositionAtY(Line line, double y)
@@ -402,47 +392,6 @@ namespace PPR
                 (h[3] * u + h[4] * v + h[5]) / denominator);
         }
 
-        private static double[] SolveLinearSystem(double[,] matrix)
-        {
-            const int size = 8;
-            for (int column = 0; column < size; column++)
-            {
-                int pivot = column;
-                for (int row = column + 1; row < size; row++)
-                {
-                    if (Math.Abs(matrix[row, column]) > Math.Abs(matrix[pivot, column]))
-                        pivot = row;
-                }
-
-                for (int item = column; item <= size; item++)
-                {
-                    double temp = matrix[column, item];
-                    matrix[column, item] = matrix[pivot, item];
-                    matrix[pivot, item] = temp;
-                }
-
-                double divisor = matrix[column, column];
-                for (int item = column; item <= size; item++)
-                    matrix[column, item] /= divisor;
-
-                for (int row = 0; row < size; row++)
-                {
-                    if (row == column)
-                        continue;
-
-                    double factor = matrix[row, column];
-                    for (int item = column; item <= size; item++)
-                        matrix[row, item] -= factor * matrix[column, item];
-                }
-            }
-
-            double[] result = new double[size];
-            for (int i = 0; i < size; i++)
-                result[i] = matrix[i, size];
-
-            return result;
-        }
-
         private static unsafe void SampleBilinear(
             byte* source,
             int stride,
@@ -461,16 +410,23 @@ namespace PPR
                 return;
             }
 
-            int ix = (int)x;
-            int iy = (int)y;
+            int ix = Math.Min((int)x, width - 1);
+            int iy = Math.Min((int)y, height - 1);
             double fx = x - ix;
             double fy = y - iy;
-            int x0 = Math.Min(ix, width - 2);
-            int y0 = Math.Min(iy, height - 2);
+            int x0 = Math.Min(ix, Math.Max(0, width - 2));
+            int y0 = Math.Min(iy, Math.Max(0, height - 2));
+            int x1 = Math.Min(x0 + 1, width - 1);
+            int y1 = Math.Min(y0 + 1, height - 1);
             byte* p00 = source + y0 * stride + x0 * 4;
-            byte* p10 = p00 + 4;
-            byte* p01 = p00 + stride;
-            byte* p11 = p01 + 4;
+            byte* p10 = source + y0 * stride + x1 * 4;
+            byte* p01 = source + y1 * stride + x0 * 4;
+            byte* p11 = source + y1 * stride + x1 * 4;
+
+            if (ix == width - 1)
+                fx = 1.0;
+            if (iy == height - 1)
+                fy = 1.0;
 
             for (int channel = 0; channel < 4; channel++)
             {

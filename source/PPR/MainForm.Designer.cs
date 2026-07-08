@@ -377,7 +377,7 @@
             this.button_RightEdge.Size = new System.Drawing.Size(82, 30);
             this.button_RightEdge.Text = "Jobb szél";
             this.button_RightEdge.Click += new System.EventHandler(this.button_RightEdge_Click);
-            // 
+            //
             // button_Normalize
             // 
             this.button_Normalize.AutoToolTip = false;

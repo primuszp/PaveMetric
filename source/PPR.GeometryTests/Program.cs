@@ -17,6 +17,9 @@ RunTopViewWithExtrapolatedCornersTest();
 RunTopViewCornerMappingTest();
 RunPilisGeometryTest();
 RunAutomaticTopViewResolutionTest();
+RunCurvedRoundTripTest();
+RunCurvedTopViewTest();
+RunCurvedSlantedBoundaryTest();
 if (pilisPhotoPath != null && pilisOutputPath != null)
     ExportPilisTopView(pilisPhotoPath, pilisOutputPath);
 
@@ -313,6 +316,108 @@ static void RunAutomaticTopViewResolutionTest()
     Assert(topViewPixels >= sourcePixels, "Automatic top view must contain at least as many pixels as the source.");
 }
 
+static void RunCurvedRoundTripTest()
+{
+    PerspectiveCorrection correction = CreateCurvedCorrection();
+    double[] xValues = [0.0, 1.5, 3.0, 4.5, 6.0];
+    double[] yValues = [0.0, 2.5, 5.0, 7.5, 10.0];
+
+    foreach (double x in xValues)
+    {
+        foreach (double y in yValues)
+        {
+            Pos real = new Pos(x, y);
+            Pos screen = correction.GetScreenPosition(real);
+            Pos roundTrip = correction.GetRealPosition(screen);
+
+            AssertClose(real.X, roundTrip.X, "curved: real X round trip", 1e-4);
+            AssertClose(real.Y, roundTrip.Y, "curved: real Y round trip", 1e-4);
+        }
+    }
+}
+
+static void RunCurvedTopViewTest()
+{
+    PerspectiveCorrection correction = CreateCurvedCorrection();
+    using Bitmap source = new Bitmap(900, 1100);
+    using (Graphics graphics = Graphics.FromImage(source))
+    {
+        graphics.Clear(Color.Black);
+        Point[] polygon = new Point[]
+        {
+            new Point(100, 1000),
+            new Point(800, 1000),
+            new Point(760, 650),
+            new Point(640, 300),
+            new Point(500, 100),
+            new Point(220, 100),
+            new Point(300, 300),
+            new Point(250, 650)
+        };
+        graphics.FillPolygon(Brushes.White, polygon);
+    }
+
+    using Bitmap? topView = correction.CreateTopView(source, 10, sharpen: false);
+    Assert(topView != null, "Curved top view must be generated.");
+    if (topView == null) return;
+
+    Assert(topView.Width == 60 && topView.Height == 100, "Curved top view dimensions must follow real pavement dimensions.");
+    Color center = topView.GetPixel(topView.Width / 2, topView.Height / 2);
+    Assert(center.R > 200 && center.G > 200 && center.B > 200, "Curved top view center must contain warped pavement pixels.");
+}
+
+static void RunCurvedSlantedBoundaryTest()
+{
+    PerspectiveCorrection correction = CreateCurvedCorrection();
+    Line near = new Line { P0 = new Pos(100, 1000), P1 = new Pos(796, 965) };
+    Line far = new Line { P0 = new Pos(252, 180), P1 = new Pos(528, 140) };
+    correction.NormalizeCurved(correction.LeftEdgePoints, correction.RightEdgePoints, near, far, 10.0, 6.0);
+
+    Assert(correction.Normalized, "Curved slanted-boundary geometry must normalize.");
+    AssertPointOnLine(correction.GetScreenPosition(new Pos(0.0, 0.0)), near, "curved near-left boundary");
+    AssertPointOnLine(correction.GetScreenPosition(new Pos(6.0, 0.0)), near, "curved near-right boundary");
+    AssertPointOnLine(correction.GetScreenPosition(new Pos(0.0, 10.0)), far, "curved far-left boundary");
+    AssertPointOnLine(correction.GetScreenPosition(new Pos(6.0, 10.0)), far, "curved far-right boundary");
+}
+
+static PerspectiveCorrection CreateCurvedCorrection()
+{
+    return new PerspectiveCorrection
+    {
+        PavementWidth = 6.0,
+        Length = 10.0,
+        NearDistance = 1000.0,
+        FarDistance = 100.0,
+        Normalized = true,
+        RowCount = 5,
+        ColCount = 3,
+        LeftEdge = new Line
+        {
+            P0 = new Pos(100, 1000),
+            P1 = new Pos(220, 100)
+        },
+        RightEdge = new Line
+        {
+            P0 = new Pos(800, 1000),
+            P1 = new Pos(500, 100)
+        },
+        LeftEdgePoints =
+        [
+            new Pos(100, 1000),
+            new Pos(250, 650),
+            new Pos(300, 300),
+            new Pos(220, 100)
+        ],
+        RightEdgePoints =
+        [
+            new Pos(800, 1000),
+            new Pos(760, 650),
+            new Pos(640, 300),
+            new Pos(500, 100)
+        ]
+    };
+}
+
 static PerspectiveCorrection CreatePilisCorrection()
 {
     return new PerspectiveCorrection
@@ -335,9 +440,9 @@ static PerspectiveCorrection CreatePilisCorrection()
     };
 }
 
-static void AssertClose(double expected, double actual, string message)
+static void AssertClose(double expected, double actual, string message, double allowedTolerance = tolerance)
 {
-    if (Math.Abs(expected - actual) > tolerance)
+    if (Math.Abs(expected - actual) > allowedTolerance)
         throw new InvalidOperationException($"{message}: expected {expected}, got {actual}.");
 }
 
@@ -350,4 +455,13 @@ static void Assert(bool condition, string message)
 {
     if (!condition)
         throw new InvalidOperationException(message);
+}
+
+static void AssertPointOnLine(Pos point, Line line, string message)
+{
+    double dx = line.P1.X - line.P0.X;
+    double dy = line.P1.Y - line.P0.Y;
+    double length = Math.Sqrt(dx * dx + dy * dy);
+    double distance = Math.Abs((point.X - line.P0.X) * dy - (point.Y - line.P0.Y) * dx) / length;
+    Assert(distance < 1e-6, $"{message}: point is {distance} px from line.");
 }

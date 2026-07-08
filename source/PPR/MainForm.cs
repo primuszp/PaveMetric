@@ -138,27 +138,14 @@ namespace PPR
 
         void drawingArea_OnCommandStateChanged(object sender, CommandEventArgs e)
         {
-            if (e.Command < 4 && e.Command > 0)
+            if (e.Command <= 4 && e.Command > 0)
             {
-                bool doNormalize = true;
-                for (int i = 0; i < 4; i++)
-                {
-                    if (drawingArea.Lines[i].P1.Y == 0)
-                    {
-                        doNormalize = false;
-                        break;
-                    }
-                }
+                if (e.Command == 3 && e.SubCommand == 1)
+                    SetCurveFromLine(drawingArea.LeftEdgeCurvePoints, drawingArea.Lines[2], drawingArea.Lines[1].P0.Y, drawingArea.Lines[0].P0.Y);
+                else if (e.Command == 4 && e.SubCommand == 1)
+                    SetCurveFromLine(drawingArea.RightEdgeCurvePoints, drawingArea.Lines[3], drawingArea.Lines[1].P0.Y, drawingArea.Lines[0].P0.Y);
 
-                if (e.Command == 3 || e.Command == 4)
-                {
-                    if (e.SubCommand == 0) doNormalize = false;
-                }
-
-                if (doNormalize)
-                {
-                    Normalize();
-                }
+                drawingArea.RenderNeeded = true;
             }
 
             if (e.Command == 10)
@@ -391,53 +378,30 @@ namespace PPR
         {
             drawingArea.Lines.Clear();
 
-            Line[] lines = _project.ActualPhoto.PerspectiveCorrection.GetNet();
+            var pc = _project.ActualPhoto.PerspectiveCorrection;
+            Line[] lines = pc.GetNet();
 
-            // Far border
-            Line newLine = new Line();
-            newLine.LineWidth = 2.0;
-            newLine.LineColor = Color.LightGreen;
-            newLine.P0.X = _project.ActualPhoto.PerspectiveCorrection.LeftEdge.P1.X;
-            newLine.P0.Y = _project.ActualPhoto.PerspectiveCorrection.LeftEdge.P1.Y;
-            newLine.P1.X = _project.ActualPhoto.PerspectiveCorrection.RightEdge.P1.X;
-            newLine.P1.Y = _project.ActualPhoto.PerspectiveCorrection.RightEdge.P1.Y;
-            drawingArea.Lines.Add(newLine);
-
-            // Near border
-            newLine = new Line();
-            newLine.LineWidth = 2.0;
-            newLine.LineColor = Color.LightGreen;
-            newLine.P0.X = _project.ActualPhoto.PerspectiveCorrection.LeftEdge.P0.X;
-            newLine.P0.Y = _project.ActualPhoto.PerspectiveCorrection.LeftEdge.P0.Y;
-            newLine.P1.X = _project.ActualPhoto.PerspectiveCorrection.RightEdge.P0.X;
-            newLine.P1.Y = _project.ActualPhoto.PerspectiveCorrection.RightEdge.P0.Y;
-            drawingArea.Lines.Add(newLine);
-
-            // Left pavement edge
-            newLine = new Line();
-            newLine.LineWidth = 2.0;
-            newLine.LineColor = Color.Pink;
-            newLine.P0.X = _project.ActualPhoto.PerspectiveCorrection.LeftEdge.P0.X;
-            newLine.P0.Y = _project.ActualPhoto.PerspectiveCorrection.LeftEdge.P0.Y;
-            newLine.P1.X = _project.ActualPhoto.PerspectiveCorrection.LeftEdge.P1.X;
-            newLine.P1.Y = _project.ActualPhoto.PerspectiveCorrection.LeftEdge.P1.Y;
-            drawingArea.Lines.Add(newLine);
-
-            // Right pavement edge
-            newLine = new Line();
-            newLine.LineWidth = 2.0;
-            newLine.LineColor = Color.Pink;
-            newLine.P0.X = _project.ActualPhoto.PerspectiveCorrection.RightEdge.P0.X;
-            newLine.P0.Y = _project.ActualPhoto.PerspectiveCorrection.RightEdge.P0.Y;
-            newLine.P1.X = _project.ActualPhoto.PerspectiveCorrection.RightEdge.P1.X;
-            newLine.P1.Y = _project.ActualPhoto.PerspectiveCorrection.RightEdge.P1.Y;
-            drawingArea.Lines.Add(newLine);
+            drawingArea.Lines.Add(CreateLine(pc.LeftEdge.P1, pc.RightEdge.P1, Color.LightGreen, 2.0));
+            drawingArea.Lines.Add(CreateLine(pc.LeftEdge.P0, pc.RightEdge.P0, Color.LightGreen, 2.0));
+            drawingArea.Lines.Add(CreateLine(pc.LeftEdge.P0, pc.LeftEdge.P1, Color.Pink, 2.0));
+            drawingArea.Lines.Add(CreateLine(pc.RightEdge.P0, pc.RightEdge.P1, Color.Pink, 2.0));
 
             // Net lines
             foreach (Line line in lines)
             {
                 drawingArea.Lines.Add(line);
             }
+        }
+
+        private static Line CreateLine(Pos p0, Pos p1, Color color, double lineWidth)
+        {
+            return new Line
+            {
+                P0 = new Pos(p0.X, p0.Y),
+                P1 = new Pos(p1.X, p1.Y),
+                LineColor = color,
+                LineWidth = lineWidth
+            };
         }
 
         private void ImportPhotos()
@@ -554,6 +518,12 @@ namespace PPR
                 drawingArea.Photo = _perspectiveBitmap;
 
                 drawingArea.PavementPhoto = _project.ActualPhoto;
+                drawingArea.LeftEdgeCurvePoints = ClonePoints(_project.ActualPhoto.PerspectiveCorrection.LeftEdgePoints);
+                drawingArea.RightEdgeCurvePoints = ClonePoints(_project.ActualPhoto.PerspectiveCorrection.RightEdgePoints);
+                if (drawingArea.LeftEdgeCurvePoints.Count < 2)
+                    SetCurveFromLine(drawingArea.LeftEdgeCurvePoints, _project.ActualPhoto.PerspectiveCorrection.LeftEdge, _project.ActualPhoto.PerspectiveCorrection.NearDistance, _project.ActualPhoto.PerspectiveCorrection.FarDistance);
+                if (drawingArea.RightEdgeCurvePoints.Count < 2)
+                    SetCurveFromLine(drawingArea.RightEdgeCurvePoints, _project.ActualPhoto.PerspectiveCorrection.RightEdge, _project.ActualPhoto.PerspectiveCorrection.NearDistance, _project.ActualPhoto.PerspectiveCorrection.FarDistance);
 
                 //if (project.ActualPhoto.PerspectiveCorrection.PavementWidth == 0)
                 //{
@@ -604,6 +574,8 @@ namespace PPR
             else
             {
                 drawingArea.PavementPhoto = null;
+                drawingArea.LeftEdgeCurvePoints.Clear();
+                drawingArea.RightEdgeCurvePoints.Clear();
                 button_ToggleView.Enabled = false;
             }
 
@@ -693,17 +665,98 @@ namespace PPR
 
             double.TryParse(textBox_SectionLength.Text, out var length);
             double.TryParse(textBox_PavementWidth.Text, out var width);
+            SnapCurveEndpointsToBoundaries(drawingArea.LeftEdgeCurvePoints, drawingArea.Lines[1].P0.Y, drawingArea.Lines[0].P0.Y);
+            SnapCurveEndpointsToBoundaries(drawingArea.RightEdgeCurvePoints, drawingArea.Lines[1].P0.Y, drawingArea.Lines[0].P0.Y);
 
             _project.ActualPhoto.PerspectiveCorrection.Length = length;
             _project.ActualPhoto.PerspectiveCorrection.PavementWidth = width;
 
-            _project.ActualPhoto.PerspectiveCorrection.Normalize(lines, length, width);
+            if (HasCurvedEdges())
+            {
+                _project.ActualPhoto.PerspectiveCorrection.NormalizeCurved(
+                    drawingArea.LeftEdgeCurvePoints,
+                    drawingArea.RightEdgeCurvePoints,
+                    length,
+                    width);
+            }
+            else
+            {
+                if (drawingArea.LeftEdgeCurvePoints.Count == 2)
+                {
+                    lines[2].P0 = new Pos(drawingArea.LeftEdgeCurvePoints[0].X, drawingArea.LeftEdgeCurvePoints[0].Y);
+                    lines[2].P1 = new Pos(drawingArea.LeftEdgeCurvePoints[1].X, drawingArea.LeftEdgeCurvePoints[1].Y);
+                }
+
+                if (drawingArea.RightEdgeCurvePoints.Count == 2)
+                {
+                    lines[3].P0 = new Pos(drawingArea.RightEdgeCurvePoints[0].X, drawingArea.RightEdgeCurvePoints[0].Y);
+                    lines[3].P1 = new Pos(drawingArea.RightEdgeCurvePoints[1].X, drawingArea.RightEdgeCurvePoints[1].Y);
+                }
+
+                _project.ActualPhoto.PerspectiveCorrection.Normalize(lines, length, width);
+            }
             _topViewBitmap?.Dispose();
             _topViewBitmap = null;
 
             DrawNet();
 
             drawingArea.RenderNeeded = true;
+        }
+
+        private static List<Pos> ClonePoints(List<Pos> points)
+        {
+            List<Pos> result = new List<Pos>();
+            if (points == null)
+                return result;
+
+            foreach (Pos point in points)
+                result.Add(new Pos(point.X, point.Y));
+
+            return result;
+        }
+
+        private static void SetCurveFromLine(List<Pos> points, Line line, double nearY, double farY)
+        {
+            if (!IsUsableLine(line))
+                return;
+
+            points.Clear();
+            points.Add(new Pos(GetLineXAtY(line, nearY), nearY));
+            points.Add(new Pos(GetLineXAtY(line, farY), farY));
+        }
+
+        private static double GetLineXAtY(Line line, double y)
+        {
+            double dy = line.P1.Y - line.P0.Y;
+            if (Math.Abs(dy) < 1e-9)
+                return line.P0.X;
+
+            double amount = (y - line.P0.Y) / dy;
+            return line.P0.X + (line.P1.X - line.P0.X) * amount;
+        }
+
+        private static void SnapCurveEndpointsToBoundaries(List<Pos> points, double nearY, double farY)
+        {
+            if (points == null || points.Count < 2)
+                return;
+
+            points[0].Y = nearY;
+            points[points.Count - 1].Y = farY;
+        }
+
+        private bool HasCurvedEdges()
+        {
+            return drawingArea.LeftEdgeCurvePoints.Count > 2 || drawingArea.RightEdgeCurvePoints.Count > 2;
+        }
+
+        private static bool IsUsableLine(Line line)
+        {
+            if (line == null)
+                return false;
+
+            double dx = line.P1.X - line.P0.X;
+            double dy = line.P1.Y - line.P0.Y;
+            return dx * dx + dy * dy > 1e-9;
         }
 
         private void button_Normalize_Click_1(object sender, EventArgs e)

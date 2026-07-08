@@ -452,79 +452,12 @@ namespace PPR
 
         private void DrawLines(PavementPhoto photo, Graphics graphics)
         {
-            var lines = photo.PerspectiveCorrection.GetNet().ToList();
-
-            // Far border
-            var newLine = new Line
-            {
-                LineWidth = 4.0,
-                LineColor = Color.LightGreen,
-                P0 =
-                {
-                    X = photo.PerspectiveCorrection.LeftEdge.P1.X,
-                    Y = photo.PerspectiveCorrection.LeftEdge.P1.Y
-                },
-                P1 =
-                {
-                    X = photo.PerspectiveCorrection.RightEdge.P1.X,
-                    Y = photo.PerspectiveCorrection.RightEdge.P1.Y
-                }
-            };
-            lines.Add(newLine);
-
-            // Near border
-            newLine = new Line
-            {
-                LineWidth = 4.0,
-                LineColor = Color.LightGreen,
-                P0 =
-                {
-                    X = photo.PerspectiveCorrection.LeftEdge.P0.X,
-                    Y = photo.PerspectiveCorrection.LeftEdge.P0.Y
-                },
-                P1 =
-                {
-                    X = photo.PerspectiveCorrection.RightEdge.P0.X,
-                    Y = photo.PerspectiveCorrection.RightEdge.P0.Y
-                }
-            };
-            lines.Add(newLine);
-
-            // Left pavement edge
-            newLine = new Line
-            {
-                LineWidth = 4.0,
-                LineColor = Color.Pink,
-                P0 =
-                {
-                    X = photo.PerspectiveCorrection.LeftEdge.P0.X,
-                    Y = photo.PerspectiveCorrection.LeftEdge.P0.Y
-                },
-                P1 =
-                {
-                    X = photo.PerspectiveCorrection.LeftEdge.P1.X,
-                    Y = photo.PerspectiveCorrection.LeftEdge.P1.Y
-                }
-            };
-            lines.Add(newLine);
-
-            // Right pavement edge
-            newLine = new Line
-            {
-                LineWidth = 4.0,
-                LineColor = Color.Pink,
-                P0 =
-                {
-                    X = photo.PerspectiveCorrection.RightEdge.P0.X,
-                    Y = photo.PerspectiveCorrection.RightEdge.P0.Y
-                },
-                P1 =
-                {
-                    X = photo.PerspectiveCorrection.RightEdge.P1.X,
-                    Y = photo.PerspectiveCorrection.RightEdge.P1.Y
-                }
-            };
-            lines.Add(newLine);
+            var pc = photo.PerspectiveCorrection;
+            var lines = pc.GetNet().ToList();
+            lines.AddRange(pc.GetScreenPolyline(0.0, pc.Length, pc.PavementWidth, pc.Length, Color.LightGreen, 4.0));
+            lines.AddRange(pc.GetScreenPolyline(0.0, 0.0, pc.PavementWidth, 0.0, Color.LightGreen, 4.0));
+            lines.AddRange(pc.GetScreenPolyline(0.0, 0.0, 0.0, pc.Length, Color.Pink, 4.0));
+            lines.AddRange(pc.GetScreenPolyline(pc.PavementWidth, 0.0, pc.PavementWidth, pc.Length, Color.Pink, 4.0));
 
             foreach (var line in lines)
             {
@@ -555,15 +488,11 @@ namespace PPR
                     var nearReal = myError.StartSection - startSection;
                     var farReal = myError.EndSection - startSection;
 
-                    var screenPositions = new Pos[4];
-                    screenPositions[0] = photo.PerspectiveCorrection.GetScreenPosition(new Pos(leftReal, nearReal));
-                    screenPositions[1] = photo.PerspectiveCorrection.GetScreenPosition(new Pos(rightReal, nearReal));
-                    screenPositions[2] = photo.PerspectiveCorrection.GetScreenPosition(new Pos(rightReal, farReal));
-                    screenPositions[3] = photo.PerspectiveCorrection.GetScreenPosition(new Pos(leftReal, farReal));
+                    var screenPositions = photo.PerspectiveCorrection.GetScreenAreaPolygon(leftReal, rightReal, nearReal, farReal);
 
-                    var points = new Point[4];
+                    var points = new Point[screenPositions.Length];
 
-                    for (var i = 0; i < 4; i++)
+                    for (var i = 0; i < screenPositions.Length; i++)
                     {
                         points[i].X = (int)screenPositions[i].X;
                         points[i].Y = (int)screenPositions[i].Y;

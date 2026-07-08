@@ -31,11 +31,19 @@ namespace PPR
         private Line measure_ruler = null;
         private MouseButtons mouseButton = MouseButtons.None;
         private int activeErrorHandle = -1;
+        private List<Pos> activeCurveEditPoints;
+        private int activeCurveHandle = -1;
+        private int activeCurveInsertSegment = -1;
+        private Pos activeCurveInsertMidpoint;
+        private List<Pos> hoverCurveEditPoints;
+        private int hoverCurveSegment = -1;
         private SurfaceError errorBeforeEdit;
         private const int ErrorHandleSize = 9;
         private bool topViewEnabled;
 
         public List<Line> Lines = new List<Line>();
+        public List<Pos> LeftEdgeCurvePoints = new List<Pos>();
+        public List<Pos> RightEdgeCurvePoints = new List<Pos>();
         public List<ErrorLayerControl> ErrorLayers = new List<ErrorLayerControl>();
 
         int command = 0;
@@ -206,8 +214,21 @@ namespace PPR
                 subCommand = 0;
                 RaiseCommandStateChanged(10, 1, x0 + e.X / zoom, y0 + e.Y / zoom);
             }
+            else if (mouseButton == MouseButtons.Left
+                && activeCurveInsertSegment >= 0
+                && activeCurveEditPoints != null)
+            {
+                activeCurveEditPoints.Insert(activeCurveInsertSegment + 1, new Pos(x0 + e.X / zoom, y0 + e.Y / zoom));
+                RenderNeeded = true;
+            }
 
             activeErrorHandle = -1;
+            activeCurveHandle = -1;
+            activeCurveInsertSegment = -1;
+            activeCurveInsertMidpoint = null;
+            activeCurveEditPoints = null;
+            hoverCurveEditPoints = null;
+            hoverCurveSegment = -1;
             errorBeforeEdit = null;
             mouseButton = MouseButtons.None;
         }
@@ -228,11 +249,20 @@ namespace PPR
                     if (command == 0)
                     {
                         int hoveredHandle = HitTestSelectedHandle(e.Location);
-                        Cursor = hoveredHandle == 0 || hoveredHandle == 2
-                            ? Cursors.SizeNWSE
-                            : hoveredHandle == 1 || hoveredHandle == 3
-                                ? Cursors.SizeNESW
-                                : Cursors.Default;
+                        int curveHandle = HitTestCurveHandle(e.Location, out hoverCurveEditPoints, out bool hoverMidpoint);
+                        hoverCurveSegment = hoverMidpoint ? curveHandle : -1;
+                        Cursor = curveHandle >= 0
+                            ? Cursors.SizeAll
+                            : hoveredHandle == 0 || hoveredHandle == 2
+                                ? Cursors.SizeNWSE
+                                : hoveredHandle == 1 || hoveredHandle == 3
+                                    ? Cursors.SizeNESW
+                                    : Cursors.Default;
+                    }
+                    else
+                    {
+                        hoverCurveEditPoints = null;
+                        hoverCurveSegment = -1;
                     }
 
                     switch (command)
@@ -284,6 +314,23 @@ namespace PPR
                         UpdateSelectedErrorFromHandle(activeErrorHandle, x0 + e.X / zoom, y0 + e.Y / zoom);
                         RenderNeeded = true;
                     }
+                    else if (activeCurveHandle >= 0 && activeCurveEditPoints != null)
+                    {
+                        activeCurveEditPoints[activeCurveHandle].X = x0 + e.X / zoom;
+                        if (activeCurveHandle == 0)
+                            activeCurveEditPoints[activeCurveHandle].Y = Lines[1].P0.Y;
+                        else if (activeCurveHandle == activeCurveEditPoints.Count - 1)
+                            activeCurveEditPoints[activeCurveHandle].Y = Lines[0].P0.Y;
+                        else
+                            activeCurveEditPoints[activeCurveHandle].Y = y0 + e.Y / zoom;
+                        RenderNeeded = true;
+                    }
+                    else if (activeCurveInsertSegment >= 0 && activeCurveEditPoints != null)
+                    {
+                        x_Mouse = x0 + e.X / zoom;
+                        y_Mouse = y0 + e.Y / zoom;
+                        RenderNeeded = true;
+                    }
                     else if (command == 10 && subCommand == 1)
                     {
                         AreaPos1.X = x0 + e.X / zoom;
@@ -328,6 +375,24 @@ namespace PPR
 
                     if (command == 0 && PavementPhoto != null)
                     {
+                        activeCurveHandle = HitTestCurveHandle(e.Location, out activeCurveEditPoints, out bool midpoint);
+                        if (activeCurveHandle >= 0)
+                        {
+                            if (midpoint)
+                            {
+                                activeCurveInsertSegment = activeCurveHandle;
+                                PointF midpointPoint = GetCurveSegmentMidpoint(
+                                    activeCurveEditPoints,
+                                    activeCurveInsertSegment,
+                                    ToControlPoint(activeCurveEditPoints[activeCurveInsertSegment]),
+                                    ToControlPoint(activeCurveEditPoints[activeCurveInsertSegment + 1]));
+                                activeCurveInsertMidpoint = new Pos(x0 + midpointPoint.X / zoom, y0 + midpointPoint.Y / zoom);
+                                activeCurveHandle = -1;
+                            }
+
+                            break;
+                        }
+
                         activeErrorHandle = HitTestSelectedHandle(e.Location);
                         if (activeErrorHandle >= 0 && SelectedError != null)
                         {
@@ -347,8 +412,8 @@ namespace PPR
                             Lines[0].P1.X = photo.Width;
                             Lines[0].P0.Y = y_Mouse;
                             Lines[0].P1.Y = y_Mouse;
-                            RenderNeeded = true;
                             command = 0;
+                            RenderNeeded = true;
                             break;
                         case 2:
                             if (photo == null) break;
@@ -356,8 +421,8 @@ namespace PPR
                             Lines[1].P1.X = photo.Width;
                             Lines[1].P0.Y = y_Mouse;
                             Lines[1].P1.Y = y_Mouse;
-                            RenderNeeded = true;
                             command = 0;
+                            RenderNeeded = true;
                             break;
                         case 3:
                             if (subCommand == 0)
@@ -429,6 +494,18 @@ namespace PPR
                     }
                     break;
                 case MouseButtons.Right:
+                    if (command == 0 && PavementPhoto != null)
+                    {
+                        int handle = HitTestCurveHandle(e.Location, out List<Pos> points, out bool midpoint);
+                        if (handle > 0 && !midpoint && points != null && handle < points.Count - 1)
+                        {
+                            points.RemoveAt(handle);
+                            mouseButton = MouseButtons.None;
+                            RenderNeeded = true;
+                            break;
+                        }
+                    }
+
                     x0_MouseDown = x0;
                     y0_MouseDown = y0;
                     x_MouseDown = e.X;
@@ -512,14 +589,18 @@ namespace PPR
                     double nearReal = myError.StartSection - startSection;
                     double farReal = myError.EndSection - startSection;
 
-                    Pos[] screenPositions = new Pos[4];
-                    screenPositions[0] = RealToViewPosition(new Pos(leftReal, nearReal));
-                    screenPositions[1] = RealToViewPosition(new Pos(rightReal, nearReal));
-                    screenPositions[2] = RealToViewPosition(new Pos(rightReal, farReal));
-                    screenPositions[3] = RealToViewPosition(new Pos(leftReal, farReal));
+                    Pos[] screenPositions = topViewEnabled
+                        ? new Pos[]
+                        {
+                            RealToViewPosition(new Pos(leftReal, nearReal)),
+                            RealToViewPosition(new Pos(rightReal, nearReal)),
+                            RealToViewPosition(new Pos(rightReal, farReal)),
+                            RealToViewPosition(new Pos(leftReal, farReal))
+                        }
+                        : PavementPhoto.PerspectiveCorrection.GetScreenAreaPolygon(leftReal, rightReal, nearReal, farReal);
 
-                    Point[] points = new Point[4];
-                    for (int i = 0; i < 4; i++)
+                    Point[] points = new Point[screenPositions.Length];
+                    for (int i = 0; i < screenPositions.Length; i++)
                     {
                         points[i].X = (int)((screenPositions[i].X - x0) * zoom);
                         points[i].Y = (int)((screenPositions[i].Y - y0) * zoom);
@@ -563,14 +644,29 @@ namespace PPR
                 DrawImage(photo, 0, 0);
             }
 
-            foreach (Line line in Lines)
+            for (int i = 0; i < Lines.Count; i++)
             {
-                DrawLine(line);
+                if (topViewEnabled && i < 4)
+                    continue;
+
+                if (i == 2 && LeftEdgeCurvePoints.Count >= 2)
+                    continue;
+                if (i == 3 && RightEdgeCurvePoints.Count >= 2)
+                    continue;
+
+                DrawLine(GetDisplayLine(i));
             }
 
             if (measure_ruler != null)
             {
                 DrawLine(measure_ruler);
+            }
+
+            if (!topViewEnabled)
+            {
+                DrawCurvePoints(LeftEdgeCurvePoints, Color.Pink);
+                DrawCurvePoints(RightEdgeCurvePoints, Color.Pink);
+                DrawCurveRubberLines();
             }
 
             if (command == 10 && subCommand == 1)
@@ -613,18 +709,19 @@ namespace PPR
             double xMinReal = Math.Min(nearPosReal.X, farPosReal.X);
             double xMaxReal = Math.Max(nearPosReal.X, farPosReal.X);
 
-            Pos[] cornersReal = new Pos[4];
+            Pos[] corners = topViewEnabled
+                ? new Pos[]
+                {
+                    RealToViewPosition(new Pos(xMinReal, nearPosReal.Y)),
+                    RealToViewPosition(new Pos(xMaxReal, nearPosReal.Y)),
+                    RealToViewPosition(new Pos(xMaxReal, farPosReal.Y)),
+                    RealToViewPosition(new Pos(xMinReal, farPosReal.Y))
+                }
+                : PavementPhoto.PerspectiveCorrection.GetScreenAreaPolygon(xMinReal, xMaxReal, nearPosReal.Y, farPosReal.Y);
 
-            cornersReal[0] = new Pos(xMinReal, nearPosReal.Y);
-            cornersReal[1] = new Pos(xMaxReal, nearPosReal.Y);
-            cornersReal[2] = new Pos(xMaxReal, farPosReal.Y);
-            cornersReal[3] = new Pos(xMinReal, farPosReal.Y);
-
-            Pos[] corners = new Pos[4];
-
-            for (int i = 0; i < 4; i++)
+            points = new Point[corners.Length];
+            for (int i = 0; i < corners.Length; i++)
             {
-                corners[i] = RealToViewPosition(cornersReal[i]);
                 points[i].X = (int)((corners[i].X - x0) * zoom);
                 points[i].Y = (int)((corners[i].Y - y0) * zoom);
             }
@@ -753,6 +850,198 @@ namespace PPR
             float y2 = (float)((line.P1.Y - y0) * zoom);
 
             controlDC.DrawLine(pen, x1, y1, x2, y2);
+        }
+
+        private Line GetDisplayLine(int index)
+        {
+            if (index == 1 && LeftEdgeCurvePoints.Count >= 2 && RightEdgeCurvePoints.Count >= 2)
+                return CreateDisplayLine(LeftEdgeCurvePoints[0], RightEdgeCurvePoints[0], Lines[index]);
+
+            if (index == 0 && LeftEdgeCurvePoints.Count >= 2 && RightEdgeCurvePoints.Count >= 2)
+                return CreateDisplayLine(
+                    LeftEdgeCurvePoints[LeftEdgeCurvePoints.Count - 1],
+                    RightEdgeCurvePoints[RightEdgeCurvePoints.Count - 1],
+                    Lines[index]);
+
+            return Lines[index];
+        }
+
+        private static Line CreateDisplayLine(Pos p0, Pos p1, Line source)
+        {
+            return new Line
+            {
+                P0 = new Pos(p0.X, p0.Y),
+                P1 = new Pos(p1.X, p1.Y),
+                LineColor = source.LineColor,
+                LineWidth = source.LineWidth
+            };
+        }
+
+        private void DrawCurvePoints(List<Pos> points, Color color)
+        {
+            if (points.Count == 0)
+                return;
+
+            using Pen pen = new Pen(color, 2.0f);
+            using SolidBrush brush = new SolidBrush(color);
+            using SolidBrush midpointBrush = new SolidBrush(Color.LightGreen);
+            if (points.Count > 2)
+            {
+                PointF[] curve = new PointF[points.Count];
+                for (int i = 0; i < points.Count; i++)
+                    curve[i] = ToControlPoint(points[i]);
+
+                controlDC.DrawCurve(pen, curve, 0.5f);
+            }
+
+            PointF? previous = null;
+            for (int i = 0; i < points.Count; i++)
+            {
+                Pos point = points[i];
+                PointF current = ToControlPoint(point);
+
+                if (previous.HasValue)
+                {
+                    if (points.Count == 2)
+                        controlDC.DrawLine(pen, previous.Value, current);
+
+                    PointF midpoint = GetCurveSegmentMidpoint(points, i - 1, previous.Value, current);
+                    float mx = midpoint.X;
+                    float my = midpoint.Y;
+                    controlDC.FillEllipse(midpointBrush, mx - 4, my - 4, 8, 8);
+                    controlDC.DrawEllipse(Pens.Black, mx - 4, my - 4, 8, 8);
+                }
+
+                controlDC.FillEllipse(brush, current.X - 4, current.Y - 4, 8, 8);
+                controlDC.DrawEllipse(Pens.Black, current.X - 4, current.Y - 4, 8, 8);
+                previous = current;
+            }
+        }
+
+        private void DrawCurveRubberLines()
+        {
+            if (activeCurveEditPoints != null
+                && activeCurveInsertSegment >= 0
+                && activeCurveInsertSegment < activeCurveEditPoints.Count - 1)
+            {
+                Pos mouse = new Pos(x_Mouse, y_Mouse);
+                DrawRubberLine(activeCurveEditPoints[activeCurveInsertSegment], mouse, false);
+                DrawRubberLine(mouse, activeCurveEditPoints[activeCurveInsertSegment + 1], false);
+                if (activeCurveInsertMidpoint != null)
+                    DrawRubberLine(activeCurveInsertMidpoint, mouse, true);
+                return;
+            }
+
+            if (activeCurveEditPoints != null && activeCurveHandle > 0 && activeCurveHandle < activeCurveEditPoints.Count - 1)
+            {
+                DrawRubberLine(activeCurveEditPoints[activeCurveHandle - 1], activeCurveEditPoints[activeCurveHandle], false);
+                DrawRubberLine(activeCurveEditPoints[activeCurveHandle], activeCurveEditPoints[activeCurveHandle + 1], false);
+                return;
+            }
+        }
+
+        private void DrawRubberLine(Pos p0, Pos p1, bool dashed)
+        {
+            using Pen pen = new Pen(Color.White, 1.0f);
+            if (dashed)
+                pen.DashStyle = DashStyle.Dash;
+            PointF c0 = ToControlPoint(p0);
+            PointF c1 = ToControlPoint(p1);
+            controlDC.DrawLine(pen, c0, c1);
+        }
+
+        private static Pos GetMidpoint(Pos p0, Pos p1)
+        {
+            return new Pos((p0.X + p1.X) / 2.0, (p0.Y + p1.Y) / 2.0);
+        }
+
+        private PointF GetCurveSegmentMidpoint(List<Pos> points, int segmentIndex, PointF fallbackPrevious, PointF fallbackCurrent)
+        {
+            if (points.Count < 3 || segmentIndex < 0 || segmentIndex >= points.Count - 1)
+                return new PointF(
+                    (fallbackPrevious.X + fallbackCurrent.X) / 2.0f,
+                    (fallbackPrevious.Y + fallbackCurrent.Y) / 2.0f);
+
+            Pos p0 = points[Math.Max(0, segmentIndex - 1)];
+            Pos p1 = points[segmentIndex];
+            Pos p2 = points[segmentIndex + 1];
+            Pos p3 = points[Math.Min(points.Count - 1, segmentIndex + 2)];
+            Pos midpoint = CatmullRom(p0, p1, p2, p3, 0.5);
+            return ToControlPoint(midpoint);
+        }
+
+        private static Pos CatmullRom(Pos p0, Pos p1, Pos p2, Pos p3, double t)
+        {
+            double t2 = t * t;
+            double t3 = t2 * t;
+            return new Pos(
+                0.5 * ((2.0 * p1.X)
+                    + (-p0.X + p2.X) * t
+                    + (2.0 * p0.X - 5.0 * p1.X + 4.0 * p2.X - p3.X) * t2
+                    + (-p0.X + 3.0 * p1.X - 3.0 * p2.X + p3.X) * t3),
+                0.5 * ((2.0 * p1.Y)
+                    + (-p0.Y + p2.Y) * t
+                    + (2.0 * p0.Y - 5.0 * p1.Y + 4.0 * p2.Y - p3.Y) * t2
+                    + (-p0.Y + 3.0 * p1.Y - 3.0 * p2.Y + p3.Y) * t3));
+        }
+
+        private int HitTestCurveHandle(Point mousePoint, out List<Pos> points, out bool midpoint)
+        {
+            int handle = HitTestCurveHandle(LeftEdgeCurvePoints, mousePoint, out midpoint);
+            if (handle >= 0)
+            {
+                points = LeftEdgeCurvePoints;
+                return handle;
+            }
+
+            handle = HitTestCurveHandle(RightEdgeCurvePoints, mousePoint, out midpoint);
+            if (handle >= 0)
+            {
+                points = RightEdgeCurvePoints;
+                return handle;
+            }
+
+            points = null;
+            midpoint = false;
+            return -1;
+        }
+
+        private int HitTestCurveHandle(List<Pos> points, Point mousePoint, out bool midpoint)
+        {
+            midpoint = false;
+            if (points.Count < 2)
+                return -1;
+
+            const int radius = 8;
+            for (int i = 0; i < points.Count; i++)
+            {
+                PointF point = ToControlPoint(points[i]);
+                if (Math.Abs(mousePoint.X - point.X) <= radius && Math.Abs(mousePoint.Y - point.Y) <= radius)
+                    return i;
+            }
+
+            for (int i = 0; i < points.Count - 1; i++)
+            {
+                PointF p0 = ToControlPoint(points[i]);
+                PointF p1 = ToControlPoint(points[i + 1]);
+                PointF midpointPoint = GetCurveSegmentMidpoint(points, i, p0, p1);
+                float mx = midpointPoint.X;
+                float my = midpointPoint.Y;
+                if (Math.Abs(mousePoint.X - mx) <= radius && Math.Abs(mousePoint.Y - my) <= radius)
+                {
+                    midpoint = true;
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private PointF ToControlPoint(Pos point)
+        {
+            return new PointF(
+                (float)((point.X - x0) * zoom),
+                (float)((point.Y - y0) * zoom));
         }
 
         public void DrawImage(Image image, double X, double Y)

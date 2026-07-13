@@ -42,6 +42,10 @@ namespace PPR
             this.Width = width - 2 * dx - 150;
             this.Height = height - 2 * dy;
 
+            Theme.Apply(this);
+            combo_Section.ForeColor = Theme.Accent;
+            combo_Section.BackColor = Theme.Surface;
+
             drawingArea.OnDrawingAreaMouseMove += new DrawingArea.MouseMoveEventHandler(drawingArea_OnMouseMove);
             drawingArea.OnCommandStateChanged += new DrawingArea.CommandEventHAndler(drawingArea_OnCommandStateChanged);
             drawingArea.ErrorEditCompleted += drawingArea_ErrorEditCompleted;
@@ -250,13 +254,13 @@ namespace PPR
         /// </summary>
         private void MarkPerspectiveDirty()
         {
-            button_Normalize.BackColor = Color.Gold;
+            button_Normalize.BackColor = Theme.Warning;
             button_Normalize.ToolTipText = "A szegélyek módosultak — normalizálás szükséges.";
         }
 
         private void ClearPerspectiveDirty()
         {
-            button_Normalize.BackColor = SystemColors.Control;
+            button_Normalize.BackColor = Theme.Surface;
             button_Normalize.ToolTipText = string.Empty;
         }
 

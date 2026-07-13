@@ -685,7 +685,7 @@ namespace PPR
 
         private void Clear()
         {
-            controlDC.Clear(Color.Black);
+            controlDC.Clear(Theme.Canvas);
         }
 
         private void RenderErrors()

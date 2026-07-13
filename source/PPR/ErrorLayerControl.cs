@@ -63,14 +63,9 @@ namespace PPR
             set
             {
                 isActive = value;
-                if (isActive)
-                {
-                    BorderStyle = BorderStyle.Fixed3D;
-                }
-                else
-                {
-                    BorderStyle = BorderStyle.None;
-                }
+                BackColor = isActive ? Theme.AccentSoft : Theme.Surface;
+                textBox_LayerName.BackColor = BackColor;
+                textBox_LayerName.ForeColor = isActive ? Theme.Accent : Theme.Text;
             }
         }
 
@@ -82,6 +77,9 @@ namespace PPR
         {
             parentGroup = ParentGroup;
             InitializeComponent();
+            Theme.Apply(this);
+            textBox_LayerName.BorderStyle = BorderStyle.None;
+            textBox_LayerName.BackColor = Theme.Surface;
         }
 
         private void button_Action_Click(object sender, EventArgs e)

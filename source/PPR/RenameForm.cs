@@ -16,6 +16,7 @@ namespace PPR
         public RenameForm()
         {
             InitializeComponent();
+            Theme.Apply(this);
         }
 
         private void buttonSourcePath_Click(object sender, EventArgs e)

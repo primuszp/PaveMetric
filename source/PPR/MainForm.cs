@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Drawing;
+using System.Globalization;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.IO;
 using System.Xml;
@@ -16,6 +18,9 @@ namespace PPR
         readonly Stack<EditOperation> _redoStack = new Stack<EditOperation>();
         Bitmap _perspectiveBitmap;
         Bitmap _topViewBitmap;
+        readonly object _prefetchSync = new object();
+        string _prefetchFileName;
+        Bitmap _prefetchBitmap;
 
         public MainForm()
         {
@@ -40,6 +45,7 @@ namespace PPR
             drawingArea.OnDrawingAreaMouseMove += new DrawingArea.MouseMoveEventHandler(drawingArea_OnMouseMove);
             drawingArea.OnCommandStateChanged += new DrawingArea.CommandEventHAndler(drawingArea_OnCommandStateChanged);
             drawingArea.ErrorEditCompleted += drawingArea_ErrorEditCompleted;
+            drawingArea.CurveEditCompleted += drawingArea_CurveEditCompleted;
 
             ErrorLayerControl newLayer = new ErrorLayerControl(errorLayerGroup);
             errorLayerGroup.AddLayer(newLayer);
@@ -220,6 +226,40 @@ namespace PPR
 
         }
 
+        void drawingArea_CurveEditCompleted(object sender, CurveEditEventArgs e)
+        {
+            List<Pos> points = e.Points;
+            List<Pos> before = e.Before;
+            List<Pos> after = e.After;
+            RecordOperation(
+                () => { RestorePoints(points, before); MarkPerspectiveDirty(); },
+                () => { RestorePoints(points, after); MarkPerspectiveDirty(); });
+            MarkPerspectiveDirty();
+        }
+
+        private static void RestorePoints(List<Pos> target, List<Pos> snapshot)
+        {
+            target.Clear();
+            foreach (Pos point in snapshot)
+                target.Add(new Pos(point.X, point.Y));
+        }
+
+        /// <summary>
+        /// Highlights the Normalize button after a curve edit: the perspective correction and
+        /// the top view are stale until the user re-normalizes.
+        /// </summary>
+        private void MarkPerspectiveDirty()
+        {
+            button_Normalize.BackColor = Color.Gold;
+            button_Normalize.ToolTipText = "A szegélyek módosultak — normalizálás szükséges.";
+        }
+
+        private void ClearPerspectiveDirty()
+        {
+            button_Normalize.BackColor = SystemColors.Control;
+            button_Normalize.ToolTipText = string.Empty;
+        }
+
         void drawingArea_ErrorEditCompleted(object sender, ErrorEditEventArgs e)
         {
             if (e.Before == null || BoundsEqual(e.Before, e.After))
@@ -262,73 +302,6 @@ namespace PPR
         private void button_RightLine_Click(object sender, EventArgs e)
         {
             drawingArea.Command = 4;
-        }
-
-        private void button_Normalize_Click(object sender, EventArgs e)
-        {
-            Line farLine = drawingArea.Lines[0];
-            Line nearLine = drawingArea.Lines[1];
-            Line leftLine = drawingArea.Lines[2];
-            Line rightLine = drawingArea.Lines[3];
-
-            double nearDistance = nearLine.P0.Y;
-            double farDistance = farLine.P0.Y;
-
-            if (leftLine.P0.X > leftLine.P1.X)
-            {
-                Pos temp = new Pos(leftLine.P1.X, leftLine.P1.Y);
-                leftLine.P1 = leftLine.P0;
-                leftLine.P0 = temp;
-            }
-            if (rightLine.P0.X < rightLine.P1.X)
-            {
-                Pos temp = new Pos(rightLine.P1.X, rightLine.P1.Y);
-                rightLine.P1 = rightLine.P0;
-                rightLine.P0 = temp;
-            }
-
-            double dx = leftLine.P1.X - leftLine.P0.X;
-            double dy = leftLine.P0.Y - leftLine.P1.Y;
-
-            double dyFar = leftLine.P1.Y - farDistance;
-            double dxFar = dyFar * dx / dy;
-
-            double xFarLeft = leftLine.P1.X + dxFar;
-            leftLine.P1.X = xFarLeft;
-            leftLine.P1.Y = farDistance;
-            farLine.P0.X = xFarLeft;
-
-            double dyNear = leftLine.P1.Y - nearDistance;
-            double dxNear = dyNear * dx / dy;
-
-            double xNearLeft = leftLine.P1.X + dxNear;
-            leftLine.P0.X = xNearLeft;
-            leftLine.P0.Y = nearDistance;
-            nearLine.P0.X = xNearLeft;
-
-
-            dx = rightLine.P1.X - rightLine.P0.X;
-            dy = rightLine.P0.Y - rightLine.P1.Y;
-
-            dyFar = rightLine.P1.Y - farDistance;
-            dxFar = dyFar * dx / dy;
-
-            double xFarRight = rightLine.P1.X + dxFar;
-            rightLine.P1.X = xFarRight;
-            rightLine.P1.Y = farDistance;
-            farLine.P1.X = xFarRight;
-
-            dyNear = rightLine.P1.Y - nearDistance;
-            dxNear = dyNear * dx / dy;
-
-            double xNearRight = rightLine.P1.X + dxNear;
-            rightLine.P0.X = xNearRight;
-            rightLine.P0.Y = nearDistance;
-            nearLine.P1.X = xNearRight;
-
-            DrawNet();
-
-            drawingArea.RenderNeeded = true;
         }
 
         void DrawTopViewNet()
@@ -421,13 +394,9 @@ namespace PPR
             _project.ProjectFileName = FileName;
 
             XmlSerializer serializer = new XmlSerializer(typeof(Project));
-            XmlTextWriter writer = new XmlTextWriter(FileName, Encoding.UTF8);
-
+            using XmlTextWriter writer = new XmlTextWriter(FileName, Encoding.UTF8);
             writer.Formatting = Formatting.Indented;
             serializer.Serialize(writer, _project);
-
-
-            writer.Close();
         }
 
         private void LoadProject()
@@ -440,11 +409,9 @@ namespace PPR
             if (dialog.ShowDialog() == DialogResult.OK)
             {
                 XmlSerializer serializer = new XmlSerializer(typeof(Project));
-                XmlTextReader reader = new XmlTextReader(dialog.FileName);
-
-                _project = (Project)serializer.Deserialize(reader);
+                using (XmlTextReader reader = new XmlTextReader(dialog.FileName))
+                    _project = (Project)serializer.Deserialize(reader);
                 ClearEditHistory();
-                reader.Close();
                 _project.MoveToFirstPhoto();
                 _project.ProjectFileName = dialog.FileName;
                 _project.ProjectPath = Path.GetDirectoryName(dialog.FileName);
@@ -510,12 +477,13 @@ namespace PPR
 
             if (_project.ActualPhoto != null)
             {
-                fileName = _project.ProjectPath + "\\" + _project.ActualPhoto.PhotoFileName + ".jpg";
+                fileName = GetPhotoFilePath(_project.ActualPhoto);
                 _perspectiveBitmap?.Dispose();
                 _topViewBitmap?.Dispose();
                 _topViewBitmap = null;
-                _perspectiveBitmap = new Bitmap(fileName);
+                _perspectiveBitmap = LoadPhotoBitmap(fileName);
                 drawingArea.Photo = _perspectiveBitmap;
+                PrefetchNeighborPhotos();
 
                 drawingArea.PavementPhoto = _project.ActualPhoto;
                 drawingArea.LeftEdgeCurvePoints = ClonePoints(_project.ActualPhoto.PerspectiveCorrection.LeftEdgePoints);
@@ -556,7 +524,8 @@ namespace PPR
                     foreach (ErrorLayerControl myLayer in errorLayerGroup.ErrorLayers)
                     {
                         drawingArea.ErrorLayers.Add(myLayer);
-                        _project.ErrorLayers.Add(myLayer);
+                        if (!_project.ErrorLayers.Contains(myLayer))
+                            _project.ErrorLayers.Add(myLayer);
                     }
                 }
 
@@ -580,6 +549,67 @@ namespace PPR
             }
 
             drawingArea.RenderNeeded = true;
+        }
+
+        private string GetPhotoFilePath(PavementPhoto photo)
+        {
+            return _project.ProjectPath + "\\" + photo.PhotoFileName + ".jpg";
+        }
+
+        /// <summary>
+        /// Uses the prefetched bitmap when the requested file was already loaded in the
+        /// background, otherwise loads synchronously.
+        /// </summary>
+        private Bitmap LoadPhotoBitmap(string fileName)
+        {
+            lock (_prefetchSync)
+            {
+                if (_prefetchBitmap != null && _prefetchFileName == fileName)
+                {
+                    Bitmap bitmap = _prefetchBitmap;
+                    _prefetchBitmap = null;
+                    _prefetchFileName = null;
+                    return bitmap;
+                }
+            }
+
+            return new Bitmap(fileName);
+        }
+
+        /// <summary>
+        /// Loads the next section's photo in the background so stepping through sections
+        /// (Space/PageDown) shows the image instantly.
+        /// </summary>
+        private void PrefetchNeighborPhotos()
+        {
+            int nextIndex = combo_Section.SelectedIndex + 1;
+            if (nextIndex <= 0 || nextIndex >= _project.Photos.Count)
+                return;
+
+            string fileName = GetPhotoFilePath(_project.Photos[nextIndex]);
+            lock (_prefetchSync)
+            {
+                if (_prefetchFileName == fileName)
+                    return;
+            }
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    Bitmap bitmap = new Bitmap(fileName);
+                    lock (_prefetchSync)
+                    {
+                        _prefetchBitmap?.Dispose();
+                        _prefetchBitmap = bitmap;
+                        _prefetchFileName = fileName;
+                    }
+                }
+                catch
+                {
+                    // Prefetch is best-effort; a failed load falls back to the synchronous path.
+                }
+            });
         }
 
         private void button_ImportPhotos_Click(object sender, EventArgs e)
@@ -636,9 +666,22 @@ namespace PPR
             drawingArea.MeasureAction = CalcMeasureLength;
         }
 
+        /// <summary>
+        /// Parses user-entered numbers accepting both comma and dot decimal separators,
+        /// independent of the Windows locale.
+        /// </summary>
+        internal static bool TryParseDouble(string text, out double value)
+        {
+            return double.TryParse(
+                (text ?? string.Empty).Trim().Replace(',', '.'),
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out value);
+        }
+
         void CalcMeasureLength(double measureLength)
         {
-            double.TryParse(textBox_MeasureBase.Text, out var baseLength);
+            TryParseDouble(textBox_MeasureBase.Text, out var baseLength);
             double scale = baseLength / measureLength;
 
             if (scale > 0)
@@ -663,8 +706,8 @@ namespace PPR
                 lines[i] = drawingArea.Lines[i];
             }
 
-            double.TryParse(textBox_SectionLength.Text, out var length);
-            double.TryParse(textBox_PavementWidth.Text, out var width);
+            TryParseDouble(textBox_SectionLength.Text, out var length);
+            TryParseDouble(textBox_PavementWidth.Text, out var width);
             SnapCurveEndpointsToBoundaries(drawingArea.LeftEdgeCurvePoints, drawingArea.Lines[1].P0.Y, drawingArea.Lines[0].P0.Y);
             SnapCurveEndpointsToBoundaries(drawingArea.RightEdgeCurvePoints, drawingArea.Lines[1].P0.Y, drawingArea.Lines[0].P0.Y);
 
@@ -698,6 +741,7 @@ namespace PPR
             _topViewBitmap?.Dispose();
             _topViewBitmap = null;
 
+            ClearPerspectiveDirty();
             DrawNet();
 
             drawingArea.RenderNeeded = true;
@@ -759,7 +803,7 @@ namespace PPR
             return dx * dx + dy * dy > 1e-9;
         }
 
-        private void button_Normalize_Click_1(object sender, EventArgs e)
+        private void button_Normalize_Click(object sender, EventArgs e)
         {
             Normalize();
             button_ToggleView.Enabled = _project.ActualPhoto?.PerspectiveCorrection.Normalized == true;
@@ -817,6 +861,11 @@ namespace PPR
         {
             _topViewBitmap?.Dispose();
             _perspectiveBitmap?.Dispose();
+            lock (_prefetchSync)
+            {
+                _prefetchBitmap?.Dispose();
+                _prefetchBitmap = null;
+            }
         }
 
         private void button_Previous_Click(object sender, EventArgs e)
@@ -831,6 +880,9 @@ namespace PPR
 
         private void combo_Section_SelectedIndexChanged(object sender, EventArgs e)
         {
+            // Undo history is per photo: curve-edit operations reference the point lists of
+            // the section they were recorded on, which are replaced on section change.
+            ClearEditHistory();
             _project.MoveToPhotoAt(combo_Section.SelectedIndex);
             UpdateDrawing();
         }
@@ -880,6 +932,7 @@ namespace PPR
             switch (e.KeyCode)
             {
                 case Keys.Escape:
+                    drawingArea.CancelActiveEdit();
                     drawingArea.Command = 0;
                     break;
                 case Keys.Delete:
@@ -951,7 +1004,7 @@ namespace PPR
             if (_project.ActualPhoto != null)
             {
                 double tempValue = _project.ActualPhoto.PerspectiveCorrection.Length;
-                if (double.TryParse(textBox_SectionLength.Text, out tempValue))
+                if (MainForm.TryParseDouble(textBox_SectionLength.Text, out tempValue))
                 {
                     _project.ActualPhoto.PerspectiveCorrection.Length = tempValue;
                     UpdateNet();
@@ -964,7 +1017,7 @@ namespace PPR
             if (_project.ActualPhoto != null)
             {
                 double tempValue = _project.ActualPhoto.PerspectiveCorrection.PavementWidth;
-                if (double.TryParse(textBox_PavementWidth.Text, out tempValue))
+                if (MainForm.TryParseDouble(textBox_PavementWidth.Text, out tempValue))
                 {
                     _project.ActualPhoto.PerspectiveCorrection.PavementWidth = tempValue;
                     UpdateNet();
@@ -1004,12 +1057,12 @@ namespace PPR
         {
             foreach (PavementPhoto myPhoto in _project.Photos)
             {
-                if (double.TryParse(textBox_SectionLength.Text, out var tempValue))
+                if (MainForm.TryParseDouble(textBox_SectionLength.Text, out var tempValue))
                 {
                     myPhoto.PerspectiveCorrection.Length = tempValue;
                 }
 
-                if (double.TryParse(textBox_PavementWidth.Text, out tempValue))
+                if (MainForm.TryParseDouble(textBox_PavementWidth.Text, out tempValue))
                 {
                     myPhoto.PerspectiveCorrection.PavementWidth = tempValue;
                 }
@@ -1056,16 +1109,24 @@ namespace PPR
 
         private void button_Half_Click(object sender, EventArgs e)
         {
-            _project.ActualPhoto.PerspectiveCorrection.PavementWidth *= 0.5;
-            _project.ActualPhoto.PerspectiveCorrection.Length *= 0.5;
-            ScaleLength(0.5);
-            ScaleWidth(0.5);
-            UpdateDrawing();
+            ScaleSection(0.5);
         }
 
         private void button_Double_Click(object sender, EventArgs e)
         {
-            ScaleLength(2.0);
+            ScaleSection(2.0);
+        }
+
+        private void ScaleSection(double scale)
+        {
+            if (_project.ActualPhoto == null)
+                return;
+
+            _project.ActualPhoto.PerspectiveCorrection.PavementWidth *= scale;
+            _project.ActualPhoto.PerspectiveCorrection.Length *= scale;
+            ScaleLength(scale);
+            ScaleWidth(scale);
+            UpdateDrawing();
         }
 
         void ScaleWidth(double scale)

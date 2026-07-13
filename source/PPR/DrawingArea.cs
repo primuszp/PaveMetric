@@ -9,7 +9,6 @@ namespace PPR
     public partial class DrawingArea : UserControl
     {
         private Graphics controlDC;
-        private Bitmap controlBitmap;
 
         double x0 = 0.0;
         double y0 = 0.0;
@@ -36,10 +35,17 @@ namespace PPR
         private int activeCurveInsertSegment = -1;
         private Pos activeCurveInsertMidpoint;
         private List<Pos> hoverCurveEditPoints;
-        private int hoverCurveSegment = -1;
+        private int hoverCurveHandle = -1;
+        private bool hoverCurveMidpoint;
         private SurfaceError errorBeforeEdit;
-        private const int ErrorHandleSize = 9;
+        private List<Pos> curvePointsBeforeEdit;
         private bool topViewEnabled;
+        private bool fastPaint;
+        private readonly Timer fastPaintTimer;
+
+        private int ErrorHandleSize => Math.Max(9, (int)Math.Round(9 * DeviceDpi / 96.0));
+        private int CurveHandleRadius => Math.Max(4, (int)Math.Round(4 * DeviceDpi / 96.0));
+        private int CurveHitRadius => Math.Max(8, (int)Math.Round(8 * DeviceDpi / 96.0));
 
         public List<Line> Lines = new List<Line>();
         public List<Pos> LeftEdgeCurvePoints = new List<Pos>();
@@ -89,6 +95,7 @@ namespace PPR
         public delegate void CommandEventHAndler(object sender, CommandEventArgs e);
         public event CommandEventHAndler OnCommandStateChanged;
         public event EventHandler<ErrorEditEventArgs> ErrorEditCompleted;
+        public event EventHandler<CurveEditEventArgs> CurveEditCompleted;
 
         public SurfaceError SelectedError { get; private set; }
         public bool TopViewEnabled
@@ -108,6 +115,13 @@ namespace PPR
             SetStyle(ControlStyles.AllPaintingInWmPaint |
                      ControlStyles.OptimizedDoubleBuffer |
                      ControlStyles.UserPaint, true);
+            fastPaintTimer = new Timer { Interval = 200 };
+            fastPaintTimer.Tick += (sender, e) =>
+            {
+                fastPaintTimer.Stop();
+                fastPaint = false;
+                Invalidate();
+            };
             Resize += new EventHandler(DrawingArea_Resize);
             MouseDown += new MouseEventHandler(DrawingArea_MouseDown);
             MouseUp += new MouseEventHandler(DrawingArea_MouseUp);
@@ -219,18 +233,89 @@ namespace PPR
                 && activeCurveEditPoints != null)
             {
                 activeCurveEditPoints.Insert(activeCurveInsertSegment + 1, new Pos(x0 + e.X / zoom, y0 + e.Y / zoom));
+                RaiseCurveEditCompleted();
                 RenderNeeded = true;
             }
+            else if (mouseButton == MouseButtons.Left && activeCurveHandle >= 0 && activeCurveEditPoints != null)
+            {
+                RaiseCurveEditCompleted();
+            }
 
+            ClearActiveCurveEdit();
             activeErrorHandle = -1;
+            errorBeforeEdit = null;
+            mouseButton = MouseButtons.None;
+        }
+
+        private void RaiseCurveEditCompleted()
+        {
+            if (curvePointsBeforeEdit == null || activeCurveEditPoints == null)
+                return;
+
+            if (!CurvePointsEqual(curvePointsBeforeEdit, activeCurveEditPoints))
+                CurveEditCompleted?.Invoke(this, new CurveEditEventArgs(
+                    activeCurveEditPoints,
+                    curvePointsBeforeEdit,
+                    SnapshotPoints(activeCurveEditPoints)));
+        }
+
+        private void ClearActiveCurveEdit()
+        {
             activeCurveHandle = -1;
             activeCurveInsertSegment = -1;
             activeCurveInsertMidpoint = null;
             activeCurveEditPoints = null;
-            hoverCurveEditPoints = null;
-            hoverCurveSegment = -1;
+            curvePointsBeforeEdit = null;
+        }
+
+        /// <summary>
+        /// Cancels the drag in progress (curve handle, curve insert, or error handle) and
+        /// restores the pre-drag state. Bound to Escape in the main form.
+        /// </summary>
+        public void CancelActiveEdit()
+        {
+            bool changed = false;
+            if (activeCurveEditPoints != null && curvePointsBeforeEdit != null)
+            {
+                activeCurveEditPoints.Clear();
+                activeCurveEditPoints.AddRange(curvePointsBeforeEdit);
+                changed = true;
+            }
+
+            if (activeErrorHandle >= 0 && SelectedError != null && errorBeforeEdit != null)
+            {
+                SelectedError.CopyBoundsFrom(errorBeforeEdit);
+                changed = true;
+            }
+
+            ClearActiveCurveEdit();
+            activeErrorHandle = -1;
             errorBeforeEdit = null;
             mouseButton = MouseButtons.None;
+            if (changed)
+                Invalidate();
+        }
+
+        private static List<Pos> SnapshotPoints(List<Pos> points)
+        {
+            List<Pos> result = new List<Pos>(points.Count);
+            foreach (Pos point in points)
+                result.Add(new Pos(point.X, point.Y));
+            return result;
+        }
+
+        private static bool CurvePointsEqual(List<Pos> first, List<Pos> second)
+        {
+            if (first.Count != second.Count)
+                return false;
+
+            for (int i = 0; i < first.Count; i++)
+            {
+                if (Math.Abs(first[i].X - second[i].X) > 1e-9 || Math.Abs(first[i].Y - second[i].Y) > 1e-9)
+                    return false;
+            }
+
+            return true;
         }
 
         void DrawingArea_MouseMove(object sender, MouseEventArgs e)
@@ -249,8 +334,17 @@ namespace PPR
                     if (command == 0)
                     {
                         int hoveredHandle = HitTestSelectedHandle(e.Location);
-                        int curveHandle = HitTestCurveHandle(e.Location, out hoverCurveEditPoints, out bool hoverMidpoint);
-                        hoverCurveSegment = hoverMidpoint ? curveHandle : -1;
+                        int curveHandle = HitTestCurveHandle(e.Location, out List<Pos> hoveredPoints, out bool hoverMidpoint);
+                        if (!ReferenceEquals(hoveredPoints, hoverCurveEditPoints)
+                            || curveHandle != hoverCurveHandle
+                            || hoverMidpoint != hoverCurveMidpoint)
+                        {
+                            hoverCurveEditPoints = hoveredPoints;
+                            hoverCurveHandle = curveHandle;
+                            hoverCurveMidpoint = hoverMidpoint;
+                            Invalidate();
+                        }
+
                         Cursor = curveHandle >= 0
                             ? Cursors.SizeAll
                             : hoveredHandle == 0 || hoveredHandle == 2
@@ -259,10 +353,12 @@ namespace PPR
                                     ? Cursors.SizeNESW
                                     : Cursors.Default;
                     }
-                    else
+                    else if (hoverCurveEditPoints != null || hoverCurveHandle >= 0)
                     {
                         hoverCurveEditPoints = null;
-                        hoverCurveSegment = -1;
+                        hoverCurveHandle = -1;
+                        hoverCurveMidpoint = false;
+                        Invalidate();
                     }
 
                     switch (command)
@@ -306,6 +402,7 @@ namespace PPR
                     double dy = e.Y - y_MouseDown;
                     x0 = x0_MouseDown - dx / zoom;
                     y0 = y0_MouseDown - dy / zoom;
+                    BeginFastPaint();
                     RenderNeeded = true;
                     break;
                 case MouseButtons.Left:
@@ -358,7 +455,19 @@ namespace PPR
             x0 = x_Mouse - e.X / zoom;
             y0 = y_Mouse - e.Y / zoom;
 
+            BeginFastPaint();
             RenderNeeded = true;
+        }
+
+        /// <summary>
+        /// Switches to fast (low-quality) image interpolation during pan/zoom; a short timer
+        /// repaints in high quality once the interaction pauses.
+        /// </summary>
+        private void BeginFastPaint()
+        {
+            fastPaint = true;
+            fastPaintTimer.Stop();
+            fastPaintTimer.Start();
         }
 
         void DrawingArea_MouseDown(object sender, MouseEventArgs e)
@@ -378,6 +487,7 @@ namespace PPR
                         activeCurveHandle = HitTestCurveHandle(e.Location, out activeCurveEditPoints, out bool midpoint);
                         if (activeCurveHandle >= 0)
                         {
+                            curvePointsBeforeEdit = SnapshotPoints(activeCurveEditPoints);
                             if (midpoint)
                             {
                                 activeCurveInsertSegment = activeCurveHandle;
@@ -499,7 +609,9 @@ namespace PPR
                         int handle = HitTestCurveHandle(e.Location, out List<Pos> points, out bool midpoint);
                         if (handle > 0 && !midpoint && points != null && handle < points.Count - 1)
                         {
+                            List<Pos> before = SnapshotPoints(points);
                             points.RemoveAt(handle);
+                            CurveEditCompleted?.Invoke(this, new CurveEditEventArgs(points, before, SnapshotPoints(points)));
                             mouseButton = MouseButtons.None;
                             RenderNeeded = true;
                             break;
@@ -543,35 +655,36 @@ namespace PPR
         private void DrawingArea_Resize(object sender, EventArgs e)
         {
             if (Width > 0 && Height > 0)
-            {
-                SetDrawingArea();
                 Invalidate();
-            }
-        }
-
-        public void SetDrawingArea()
-        {
-            controlDC?.Dispose();
-            controlBitmap?.Dispose();
-
-            controlBitmap = new Bitmap(Width, Height);
-            controlDC = Graphics.FromImage(controlBitmap);
-            controlDC.SmoothingMode = SmoothingMode.AntiAlias;
-            controlDC.InterpolationMode = InterpolationMode.HighQualityBilinear;
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            RenderFrame();
-            if (controlBitmap != null)
-                e.Graphics.DrawImageUnscaled(controlBitmap, 0, 0);
+            controlDC = e.Graphics;
+            if (fastPaint)
+            {
+                controlDC.SmoothingMode = SmoothingMode.HighSpeed;
+                controlDC.InterpolationMode = InterpolationMode.NearestNeighbor;
+            }
+            else
+            {
+                controlDC.SmoothingMode = SmoothingMode.AntiAlias;
+                controlDC.InterpolationMode = InterpolationMode.HighQualityBilinear;
+            }
+
+            try
+            {
+                RenderFrame();
+            }
+            finally
+            {
+                controlDC = null;
+            }
         }
 
         private void Clear()
         {
-            if (controlDC == null) SetDrawingArea();
-
             controlDC.Clear(Color.Black);
         }
 
@@ -624,7 +737,7 @@ namespace PPR
                         controlDC.FillPolygon(brush, points);
 
                         if (ReferenceEquals(myError, SelectedError))
-                            DrawErrorSelection(points);
+                            DrawErrorSelection(points, GetErrorScreenPoints(myError));
                     }
                 }
             }
@@ -646,8 +759,13 @@ namespace PPR
 
             for (int i = 0; i < Lines.Count; i++)
             {
-                if (topViewEnabled && i < 4)
+                if (topViewEnabled)
+                {
+                    // Top view: Lines holds the border and grid built by the main form —
+                    // draw them as-is, without the perspective-view curve substitutions.
+                    DrawLine(Lines[i]);
                     continue;
+                }
 
                 if (i == 2 && LeftEdgeCurvePoints.Count >= 2)
                     continue;
@@ -826,15 +944,18 @@ namespace PPR
             return points;
         }
 
-        private void DrawErrorSelection(Point[] points)
+        private void DrawErrorSelection(Point[] outlinePoints, Point[] cornerHandles)
         {
             using Pen outline = new Pen(Color.White, 2.0f) { DashStyle = DashStyle.Dash };
-            controlDC.DrawPolygon(outline, points);
+            controlDC.DrawPolygon(outline, outlinePoints);
 
-            int half = ErrorHandleSize / 2;
-            foreach (Point point in points)
+            // Handles only at the four draggable corners — the outline polygon may contain
+            // many interpolated points along curved edges.
+            int size = ErrorHandleSize;
+            int half = size / 2;
+            foreach (Point point in cornerHandles)
             {
-                Rectangle handle = new Rectangle(point.X - half, point.Y - half, ErrorHandleSize, ErrorHandleSize);
+                Rectangle handle = new Rectangle(point.X - half, point.Y - half, size, size);
                 controlDC.FillRectangle(Brushes.White, handle);
                 controlDC.DrawRectangle(Pens.Black, handle);
             }
@@ -894,6 +1015,7 @@ namespace PPR
                 controlDC.DrawCurve(pen, curve, 0.5f);
             }
 
+            bool hoveredList = ReferenceEquals(points, hoverCurveEditPoints);
             PointF? previous = null;
             for (int i = 0; i < points.Count; i++)
             {
@@ -906,16 +1028,29 @@ namespace PPR
                         controlDC.DrawLine(pen, previous.Value, current);
 
                     PointF midpoint = GetCurveSegmentMidpoint(points, i - 1, previous.Value, current);
-                    float mx = midpoint.X;
-                    float my = midpoint.Y;
-                    controlDC.FillEllipse(midpointBrush, mx - 4, my - 4, 8, 8);
-                    controlDC.DrawEllipse(Pens.Black, mx - 4, my - 4, 8, 8);
+                    bool hovered = hoveredList && hoverCurveMidpoint && hoverCurveHandle == i - 1;
+                    DrawHandleDot(midpoint, midpointBrush, hovered);
                 }
 
-                controlDC.FillEllipse(brush, current.X - 4, current.Y - 4, 8, 8);
-                controlDC.DrawEllipse(Pens.Black, current.X - 4, current.Y - 4, 8, 8);
+                DrawHandleDot(current, brush, hoveredList && !hoverCurveMidpoint && hoverCurveHandle == i);
                 previous = current;
             }
+        }
+
+        private void DrawHandleDot(PointF center, Brush brush, bool hovered)
+        {
+            int radius = hovered ? CurveHandleRadius + 2 : CurveHandleRadius;
+            float x = center.X - radius;
+            float y = center.Y - radius;
+            float size = radius * 2;
+            if (hovered)
+            {
+                using SolidBrush glow = new SolidBrush(Color.FromArgb(96, 255, 255, 255));
+                controlDC.FillEllipse(glow, x - 3, y - 3, size + 6, size + 6);
+            }
+
+            controlDC.FillEllipse(hovered ? Brushes.Orange : brush, x, y, size, size);
+            controlDC.DrawEllipse(Pens.Black, x, y, size, size);
         }
 
         private void DrawCurveRubberLines()
@@ -948,11 +1083,6 @@ namespace PPR
             PointF c0 = ToControlPoint(p0);
             PointF c1 = ToControlPoint(p1);
             controlDC.DrawLine(pen, c0, c1);
-        }
-
-        private static Pos GetMidpoint(Pos p0, Pos p1)
-        {
-            return new Pos((p0.X + p1.X) / 2.0, (p0.Y + p1.Y) / 2.0);
         }
 
         private PointF GetCurveSegmentMidpoint(List<Pos> points, int segmentIndex, PointF fallbackPrevious, PointF fallbackCurrent)
@@ -1012,7 +1142,7 @@ namespace PPR
             if (points.Count < 2)
                 return -1;
 
-            const int radius = 8;
+            int radius = CurveHitRadius;
             for (int i = 0; i < points.Count; i++)
             {
                 PointF point = ToControlPoint(points[i]);
@@ -1073,9 +1203,8 @@ namespace PPR
 
         private void DrawingArea_Disposed(object sender, EventArgs e)
         {
-            controlDC?.Dispose();
-            controlBitmap?.Dispose();
-            photo?.Dispose();
+            // The photo bitmap is owned and disposed by MainForm.
+            fastPaintTimer.Dispose();
         }
     }
 
@@ -1097,6 +1226,21 @@ namespace PPR
         public int SubCommand = 0;
         public double MouseX = 0;
         public double MouseY = 0;
+    }
+
+    public class CurveEditEventArgs : EventArgs
+    {
+        /// <summary>The live point list that was edited (LeftEdgeCurvePoints or RightEdgeCurvePoints).</summary>
+        public List<Pos> Points { get; }
+        public List<Pos> Before { get; }
+        public List<Pos> After { get; }
+
+        public CurveEditEventArgs(List<Pos> points, List<Pos> before, List<Pos> after)
+        {
+            Points = points;
+            Before = before;
+            After = after;
+        }
     }
 
     public class ErrorEditEventArgs : EventArgs

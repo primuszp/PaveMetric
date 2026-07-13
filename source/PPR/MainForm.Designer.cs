@@ -387,7 +387,7 @@
             this.button_Normalize.Name = "button_Normalize";
             this.button_Normalize.Size = new System.Drawing.Size(92, 30);
             this.button_Normalize.Text = "Normalizál";
-            this.button_Normalize.Click += new System.EventHandler(this.button_Normalize_Click_1);
+            this.button_Normalize.Click += new System.EventHandler(this.button_Normalize_Click);
             //
             // button_ToggleView
             //

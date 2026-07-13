@@ -26,6 +26,8 @@ namespace PPR
         [XmlIgnore] public double TopViewNearRealY { get; private set; }
         [XmlIgnore] public double TopViewFarRealY { get; private set; }
 
+        [XmlIgnore] private CurvedGeometry _curvedGeometry;
+
         public PerspectiveCorrection()
         {
             LeftEdge = new Line();
@@ -201,6 +203,7 @@ namespace PPR
 
             LeftEdgePoints.Clear();
             RightEdgePoints.Clear();
+            InvalidateCurvedGeometry();
             Normalized = true;
         }
 
@@ -233,6 +236,9 @@ namespace PPR
             NearDistance = (LeftEdge.P0.Y + RightEdge.P0.Y) / 2.0;
             FarDistance = (LeftEdge.P1.Y + RightEdge.P1.Y) / 2.0;
 
+            InvalidateCurvedGeometry();
+            TopViewNearRealY = 0.0;
+            TopViewFarRealY = Length;
             Normalized = HasValidGeometry();
         }
 
@@ -518,11 +524,12 @@ namespace PPR
 
         private Pos GetScreenPositionCurved(Pos realPosition)
         {
-            double station = Length <= 0.0 ? 0.0 : Math.Clamp(realPosition.Y / Length, 0.0, 1.0);
-            double lateral = PavementWidth <= 0.0 ? 0.0 : realPosition.X / PavementWidth;
-            Pos left = GetEdgePoint(LeftEdgePoints, station);
-            Pos right = GetEdgePoint(RightEdgePoints, station);
+            CurvedGeometry geometry = GetCurvedGeometry();
+            if (geometry == null)
+                return new Pos();
 
+            double lateral = PavementWidth <= 0.0 ? 0.0 : realPosition.X / PavementWidth;
+            geometry.GetCrossSectionAtRealY(realPosition.Y, out Pos left, out Pos right);
             return new Pos(
                 Lerp(left.X, right.X, lateral),
                 Lerp(left.Y, right.Y, lateral));
@@ -530,9 +537,12 @@ namespace PPR
 
         private Pos GetRealPositionCurved(Pos screenPosition)
         {
-            double bestStation = FindClosestCurveStation(screenPosition);
-            Pos left = GetEdgePoint(LeftEdgePoints, bestStation);
-            Pos right = GetEdgePoint(RightEdgePoints, bestStation);
+            CurvedGeometry geometry = GetCurvedGeometry();
+            if (geometry == null)
+                return new Pos();
+
+            double index = geometry.FindClosestCrossSection(screenPosition);
+            geometry.GetCrossSectionAt(index, out Pos left, out Pos right);
             double dx = right.X - left.X;
             double dy = right.Y - left.Y;
             double widthSquared = dx * dx + dy * dy;
@@ -540,74 +550,36 @@ namespace PPR
                 return new Pos();
 
             double lateral = ((screenPosition.X - left.X) * dx + (screenPosition.Y - left.Y) * dy) / widthSquared;
-            return new Pos(PavementWidth * lateral, Length * bestStation);
-        }
-
-        private double FindClosestCurveStation(Pos screenPosition)
-        {
-            const int samples = 80;
-            double bestStation = 0.0;
-            double bestDistance = double.MaxValue;
-
-            for (int i = 0; i <= samples; i++)
-            {
-                double station = (double)i / samples;
-                double distance = DistanceToCrossSectionSquared(screenPosition, station);
-                if (distance < bestDistance)
-                {
-                    bestDistance = distance;
-                    bestStation = station;
-                }
-            }
-
-            double left = Math.Max(0.0, bestStation - 1.0 / samples);
-            double right = Math.Min(1.0, bestStation + 1.0 / samples);
-            for (int i = 0; i < 24; i++)
-            {
-                double m1 = left + (right - left) / 3.0;
-                double m2 = right - (right - left) / 3.0;
-                if (DistanceToCrossSectionSquared(screenPosition, m1) < DistanceToCrossSectionSquared(screenPosition, m2))
-                    right = m2;
-                else
-                    left = m1;
-            }
-
-            return (left + right) / 2.0;
-        }
-
-        private double DistanceToCrossSectionSquared(Pos screenPosition, double station)
-        {
-            Pos left = GetEdgePoint(LeftEdgePoints, station);
-            Pos right = GetEdgePoint(RightEdgePoints, station);
-            double dx = right.X - left.X;
-            double dy = right.Y - left.Y;
-            double widthSquared = dx * dx + dy * dy;
-            if (widthSquared < 1e-9)
-                return double.MaxValue;
-
-            double lateral = ((screenPosition.X - left.X) * dx + (screenPosition.Y - left.Y) * dy) / widthSquared;
-            lateral = Math.Clamp(lateral, 0.0, 1.0);
-            double x = Lerp(left.X, right.X, lateral);
-            double y = Lerp(left.Y, right.Y, lateral);
-            double ex = screenPosition.X - x;
-            double ey = screenPosition.Y - y;
-            return ex * ex + ey * ey;
+            return new Pos(PavementWidth * lateral, geometry.GetRealYAt(index));
         }
 
         private double GetCurveWidth(double station)
         {
-            Pos left = GetEdgePoint(LeftEdgePoints, station);
-            Pos right = GetEdgePoint(RightEdgePoints, station);
+            CurvedGeometry geometry = GetCurvedGeometry();
+            if (geometry == null)
+                return 0.0;
+
+            geometry.GetCrossSectionAt(station * (geometry.Count - 1), out Pos left, out Pos right);
             double dx = right.X - left.X;
             double dy = right.Y - left.Y;
             return Math.Sqrt(dx * dx + dy * dy);
         }
 
-        private static Pos GetEdgePoint(List<Pos> points, double station)
+        private void InvalidateCurvedGeometry()
         {
-            station = Math.Clamp(station, 0.0, 1.0);
-            List<Pos> edge = GetSmoothEdgePoints(points);
-            return GetPolylinePointAtDistance(edge, GetPolylineLength(edge) * station);
+            _curvedGeometry = null;
+        }
+
+        private CurvedGeometry GetCurvedGeometry()
+        {
+            if (!HasCurvedGeometry() || !HasValidEdgePoints(LeftEdgePoints) || !HasValidEdgePoints(RightEdgePoints)
+                || PavementWidth <= 0.0 || Length <= 0.0)
+                return null;
+
+            if (_curvedGeometry == null || _curvedGeometry.IsStale(LeftEdgePoints, RightEdgePoints, PavementWidth, Length))
+                _curvedGeometry = CurvedGeometry.Build(LeftEdgePoints, RightEdgePoints, PavementWidth, Length);
+
+            return _curvedGeometry;
         }
 
         private static double GetPolylineLength(List<Pos> points)
@@ -708,7 +680,8 @@ namespace PPR
 
         private Bitmap CreateCurvedTopView(Bitmap source, int pixelsPerMeter, bool sharpen)
         {
-            if (!HasValidGeometry() || source == null)
+            CurvedGeometry geometry = GetCurvedGeometry();
+            if (!HasValidGeometry() || source == null || geometry == null)
                 return null;
 
             TopViewNearRealY = 0.0;
@@ -749,12 +722,15 @@ namespace PPR
                         byte* resultBase = (byte*)resultAddress;
                         byte* resultRow = resultBase + y * resultStride;
                         double realY = Length - Length * y / Math.Max(1, height - 1);
+                        geometry.GetCrossSectionAtRealY(realY, out Pos left, out Pos right);
+                        double stepX = (right.X - left.X) / Math.Max(1, width - 1);
+                        double stepY = (right.Y - left.Y) / Math.Max(1, width - 1);
 
                         for (int x = 0; x < width; x++)
                         {
-                            double realX = PavementWidth * x / Math.Max(1, width - 1);
-                            Pos screen = GetScreenPositionCurved(new Pos(realX, realY));
-                            SampleBilinear(sourceBase, sourceStride, sourceWidth, sourceHeight, screen.X, screen.Y, resultRow + x * 4);
+                            SampleBilinear(
+                                sourceBase, sourceStride, sourceWidth, sourceHeight,
+                                left.X + stepX * x, left.Y + stepY * x, resultRow + x * 4);
                         }
                     });
                 }
@@ -989,6 +965,313 @@ namespace PPR
                 double top = p00[channel] + (p10[channel] - p00[channel]) * fx;
                 double bottom = p01[channel] + (p11[channel] - p01[channel]) * fx;
                 target[channel] = (byte)(top + (bottom - top) * fy);
+            }
+        }
+
+        /// <summary>
+        /// Precomputed perspective-correct cross-section table for curved pavement edges.
+        /// The two edges are parallel arcs with independent control points and curvature, so
+        /// their points are never paired by control-point index. Instead, each edge is
+        /// parameterized by its own perspective-corrected arc length (screen length weighted by
+        /// the 1/width^2 foreshortening density, width being the distance to the other edge),
+        /// and points at equal corrected fractions are paired. Because both edges vanish at the
+        /// same point, this reproduces the exact projective model for straight edges, and pairs
+        /// parallel arcs of differing curvature by equal real station (exact for constant
+        /// curvature — equal fractions of the swept angle).
+        /// Index 0 is the near end (real Y = 0), the last index is the far end (real Y = Length).
+        /// </summary>
+        private sealed class CurvedGeometry
+        {
+            private const int SectionCount = 257;
+
+            private Pos[] _left;
+            private Pos[] _right;
+            private double[] _realY;
+
+            private List<Pos> _sourceLeft;
+            private List<Pos> _sourceRight;
+            private int _sourceLeftCount;
+            private int _sourceRightCount;
+            private double _sourceWidth;
+            private double _sourceLength;
+
+            public int Count => _realY.Length;
+
+            public bool IsStale(List<Pos> leftPoints, List<Pos> rightPoints, double width, double length)
+            {
+                return !ReferenceEquals(_sourceLeft, leftPoints)
+                    || !ReferenceEquals(_sourceRight, rightPoints)
+                    || _sourceLeftCount != leftPoints.Count
+                    || _sourceRightCount != rightPoints.Count
+                    || _sourceWidth != width
+                    || _sourceLength != length;
+            }
+
+            public static CurvedGeometry Build(List<Pos> leftPoints, List<Pos> rightPoints, double width, double length)
+            {
+                SampledPolyline leftSmooth = new SampledPolyline(GetSmoothEdgePoints(leftPoints));
+                SampledPolyline rightSmooth = new SampledPolyline(GetSmoothEdgePoints(rightPoints));
+
+                // Perspective-corrected parameterization of each edge: real length per screen
+                // length on a photographed ground plane scales with 1/(road screen width)^2.
+                // The width at an edge point is its distance to the other edge; both edges of a
+                // straight road vanish at the same point, so this distance is proportional to
+                // the true cross-width and the result matches the projective straight model.
+                // The edges are resampled densely so the density integral converges.
+                const int integrationSamples = 1024;
+                SampledPolyline leftEdge = leftSmooth.ResampleUniform(integrationSamples);
+                SampledPolyline rightEdge = rightSmooth.ResampleUniform(integrationSamples);
+                double[] leftStation = leftEdge.BuildCorrectedStations(rightSmooth);
+                double[] rightStation = rightEdge.BuildCorrectedStations(leftSmooth);
+
+                Pos[] left = new Pos[SectionCount];
+                Pos[] right = new Pos[SectionCount];
+                double[] realY = new double[SectionCount];
+                for (int i = 0; i < SectionCount; i++)
+                {
+                    double fraction = (double)i / (SectionCount - 1);
+                    left[i] = leftEdge.PointAtStation(leftStation, fraction);
+                    right[i] = rightEdge.PointAtStation(rightStation, fraction);
+                    realY[i] = fraction * length;
+                }
+
+                return new CurvedGeometry
+                {
+                    _left = left,
+                    _right = right,
+                    _realY = realY,
+                    _sourceLeft = leftPoints,
+                    _sourceRight = rightPoints,
+                    _sourceLeftCount = leftPoints.Count,
+                    _sourceRightCount = rightPoints.Count,
+                    _sourceWidth = width,
+                    _sourceLength = length
+                };
+            }
+
+            /// <summary>Cross-section endpoints at a fractional table index (clamped).</summary>
+            public void GetCrossSectionAt(double index, out Pos left, out Pos right)
+            {
+                index = Math.Clamp(index, 0.0, Count - 1);
+                int i0 = Math.Min((int)index, Count - 2);
+                double amount = index - i0;
+                left = new Pos(
+                    Lerp(_left[i0].X, _left[i0 + 1].X, amount),
+                    Lerp(_left[i0].Y, _left[i0 + 1].Y, amount));
+                right = new Pos(
+                    Lerp(_right[i0].X, _right[i0 + 1].X, amount),
+                    Lerp(_right[i0].Y, _right[i0 + 1].Y, amount));
+            }
+
+            public double GetRealYAt(double index)
+            {
+                index = Math.Clamp(index, 0.0, Count - 1);
+                int i0 = Math.Min((int)index, Count - 2);
+                return Lerp(_realY[i0], _realY[i0 + 1], index - i0);
+            }
+
+            public void GetCrossSectionAtRealY(double realY, out Pos left, out Pos right)
+            {
+                realY = Math.Clamp(realY, _realY[0], _realY[Count - 1]);
+                int low = 0;
+                int high = Count - 1;
+                while (high - low > 1)
+                {
+                    int middle = (low + high) / 2;
+                    if (_realY[middle] <= realY)
+                        low = middle;
+                    else
+                        high = middle;
+                }
+
+                double span = _realY[high] - _realY[low];
+                double amount = span < 1e-12 ? 0.0 : (realY - _realY[low]) / span;
+                GetCrossSectionAt(low + amount, out left, out right);
+            }
+
+            /// <summary>Fractional table index of the cross-section closest to a screen point.</summary>
+            public double FindClosestCrossSection(Pos screenPosition)
+            {
+                int bestIndex = 0;
+                double bestDistance = double.MaxValue;
+                for (int i = 0; i < Count; i++)
+                {
+                    double distance = DistanceToCrossSectionSquared(screenPosition, i);
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        bestIndex = i;
+                    }
+                }
+
+                double low = Math.Max(0, bestIndex - 1);
+                double high = Math.Min(Count - 1, bestIndex + 1);
+                for (int i = 0; i < 40; i++)
+                {
+                    double m1 = low + (high - low) / 3.0;
+                    double m2 = high - (high - low) / 3.0;
+                    if (DistanceToCrossSectionSquared(screenPosition, m1) < DistanceToCrossSectionSquared(screenPosition, m2))
+                        high = m2;
+                    else
+                        low = m1;
+                }
+
+                return (low + high) / 2.0;
+            }
+
+            private double DistanceToCrossSectionSquared(Pos screenPosition, double index)
+            {
+                GetCrossSectionAt(index, out Pos left, out Pos right);
+                double dx = right.X - left.X;
+                double dy = right.Y - left.Y;
+                double widthSquared = dx * dx + dy * dy;
+                if (widthSquared < 1e-9)
+                    return double.MaxValue;
+
+                double lateral = ((screenPosition.X - left.X) * dx + (screenPosition.Y - left.Y) * dy) / widthSquared;
+                lateral = Math.Clamp(lateral, 0.0, 1.0);
+                double x = Lerp(left.X, right.X, lateral);
+                double y = Lerp(left.Y, right.Y, lateral);
+                double ex = screenPosition.X - x;
+                double ey = screenPosition.Y - y;
+                return ex * ex + ey * ey;
+            }
+        }
+
+        /// <summary>Polyline with cached cumulative arc lengths for O(log n) point lookup.</summary>
+        private sealed class SampledPolyline
+        {
+            private readonly List<Pos> _points;
+            private readonly double[] _cumulative;
+
+            public SampledPolyline(List<Pos> points)
+            {
+                _points = points;
+                _cumulative = new double[points.Count];
+                for (int i = 1; i < points.Count; i++)
+                    _cumulative[i] = _cumulative[i - 1] + SegmentLength(points[i - 1], points[i]);
+            }
+
+            public double TotalLength => _cumulative[_cumulative.Length - 1];
+
+            public SampledPolyline ResampleUniform(int pointCount)
+            {
+                List<Pos> points = new List<Pos>(pointCount);
+                for (int i = 0; i < pointCount; i++)
+                    points.Add(PointAtArcLength(TotalLength * i / (pointCount - 1)));
+
+                return new SampledPolyline(points);
+            }
+
+            private Pos PointAtArcLength(double target)
+            {
+                target = Math.Clamp(target, 0.0, TotalLength);
+                int low = 0;
+                int high = _cumulative.Length - 1;
+                while (high - low > 1)
+                {
+                    int middle = (low + high) / 2;
+                    if (_cumulative[middle] <= target)
+                        low = middle;
+                    else
+                        high = middle;
+                }
+
+                double span = _cumulative[high] - _cumulative[low];
+                double amount = span < 1e-12 ? 0.0 : (target - _cumulative[low]) / span;
+                return new Pos(
+                    Lerp(_points[low].X, _points[high].X, amount),
+                    Lerp(_points[low].Y, _points[high].Y, amount));
+            }
+
+            /// <summary>
+            /// Cumulative perspective-corrected station of every vertex: screen arc length
+            /// weighted by 1/width^2, where width is the distance to the other edge. The result
+            /// is normalized to [0, 1] and strictly increasing wherever the width is finite.
+            /// </summary>
+            public double[] BuildCorrectedStations(SampledPolyline otherEdge)
+            {
+                double[] stations = new double[_points.Count];
+                double previousDensity = InverseWidthSquared(otherEdge.DistanceToPoint(_points[0]));
+                for (int i = 1; i < _points.Count; i++)
+                {
+                    double density = InverseWidthSquared(otherEdge.DistanceToPoint(_points[i]));
+                    double segment = _cumulative[i] - _cumulative[i - 1];
+                    stations[i] = stations[i - 1] + segment * (previousDensity + density) / 2.0;
+                    previousDensity = density;
+                }
+
+                double total = stations[_points.Count - 1];
+                if (total > 1e-12)
+                {
+                    for (int i = 0; i < stations.Length; i++)
+                        stations[i] /= total;
+                }
+                else
+                {
+                    for (int i = 0; i < stations.Length; i++)
+                        stations[i] = TotalLength <= 1e-12 ? 0.0 : _cumulative[i] / TotalLength;
+                }
+
+                return stations;
+            }
+
+            /// <summary>Point at the given fraction of a monotonic per-vertex station table.</summary>
+            public Pos PointAtStation(double[] stations, double fraction)
+            {
+                fraction = Math.Clamp(fraction, 0.0, 1.0);
+                int low = 0;
+                int high = stations.Length - 1;
+                while (high - low > 1)
+                {
+                    int middle = (low + high) / 2;
+                    if (stations[middle] <= fraction)
+                        low = middle;
+                    else
+                        high = middle;
+                }
+
+                double span = stations[high] - stations[low];
+                double amount = span < 1e-12 ? 0.0 : (fraction - stations[low]) / span;
+                return new Pos(
+                    Lerp(_points[low].X, _points[high].X, amount),
+                    Lerp(_points[low].Y, _points[high].Y, amount));
+            }
+
+            public double DistanceToPoint(Pos point)
+            {
+                double best = double.MaxValue;
+                int lastSegment = _points.Count - 2;
+                for (int i = 0; i <= lastSegment; i++)
+                {
+                    Pos a = _points[i];
+                    Pos b = _points[i + 1];
+                    double abx = b.X - a.X;
+                    double aby = b.Y - a.Y;
+                    double lengthSquared = abx * abx + aby * aby;
+                    double t = lengthSquared < 1e-12
+                        ? 0.0
+                        : ((point.X - a.X) * abx + (point.Y - a.Y) * aby) / lengthSquared;
+
+                    // The first and last segments extend outward as rays, so widths measured
+                    // near the ends of the other edge are not distorted by endpoint clamping.
+                    double lower = i == 0 ? double.NegativeInfinity : 0.0;
+                    double upper = i == lastSegment ? double.PositiveInfinity : 1.0;
+                    t = Math.Clamp(t, lower, upper);
+
+                    double dx = point.X - (a.X + abx * t);
+                    double dy = point.Y - (a.Y + aby * t);
+                    double distanceSquared = dx * dx + dy * dy;
+                    if (distanceSquared < best)
+                        best = distanceSquared;
+                }
+
+                return Math.Sqrt(best);
+            }
+
+            private static double InverseWidthSquared(double width)
+            {
+                return width < 1e-6 ? 0.0 : 1.0 / (width * width);
             }
         }
     }

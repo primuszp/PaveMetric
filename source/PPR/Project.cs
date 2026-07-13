@@ -85,7 +85,8 @@ namespace PPR
             newPhoto.PhotoFileName = photoFileName;
 
             var sectionString = photoFileName.Replace("+", "");
-            double.TryParse(sectionString, out var section);
+            double.TryParse(sectionString, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var section);
             newPhoto.Section = section;
         }
 
@@ -118,8 +119,9 @@ namespace PPR
 
         public void ImportFRODO(string fileName)
         {
+            var invariant = System.Globalization.CultureInfo.InvariantCulture;
             var myErrorCode = 5;
-            var reader = new StreamReader(fileName);
+            using var reader = new StreamReader(fileName);
             var loadedErrors = new List<LoadedError>();
 
             string line;
@@ -129,11 +131,11 @@ namespace PPR
                 var words = GetWords(line);
                 var newError = new LoadedError
                 {
-                    Section = Convert.ToInt32(words[0]),
-                    ErrorCode = Convert.ToInt32(words[1]),
-                    SideCode = Convert.ToInt32(words[2]),
-                    Width = Convert.ToDouble(words[3]),
-                    Length = Convert.ToDouble(words[4])
+                    Section = Convert.ToInt32(words[0], invariant),
+                    ErrorCode = Convert.ToInt32(words[1], invariant),
+                    SideCode = Convert.ToInt32(words[2], invariant),
+                    Width = Convert.ToDouble(words[3], invariant),
+                    Length = Convert.ToDouble(words[4], invariant)
                 };
                 if (newError.ErrorCode == myErrorCode)
                     loadedErrors.Add(newError);
@@ -299,7 +301,7 @@ namespace PPR
         public void ExportErrors(string fileName)
         {
             var index = 0;
-            var writer = new StreamWriter(fileName, false, Encoding.Default);
+            using var writer = new StreamWriter(fileName, false, Encoding.Default);
 
             writer.Write("Start\tEnd\t");
             for (var i = 10; i <= 17; i++)
@@ -350,17 +352,12 @@ namespace PPR
 
         public void ExportTechnology(string fileName)
         {
-            var writer = new StreamWriter(fileName, false, Encoding.Default);
+            using var writer = new StreamWriter(fileName, false, Encoding.Default);
 
             for (int i = 0; i < _photos.Count; i++)
             {
                 var pavementArea = _photos[i].PerspectiveCorrection.PavementWidth * _photos[i].PerspectiveCorrection.Length;
                 var correctedPavementArea = pavementArea;
-
-                if (_photos[i].Section == 350)
-                {
-                    ;
-                }
 
                 if (i > 0)
                 {

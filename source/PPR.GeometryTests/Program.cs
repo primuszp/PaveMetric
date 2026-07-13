@@ -20,6 +20,8 @@ RunAutomaticTopViewResolutionTest();
 RunCurvedRoundTripTest();
 RunCurvedTopViewTest();
 RunCurvedSlantedBoundaryTest();
+RunCurvedMatchesStraightModelTest();
+RunParallelArcsPerspectiveTest();
 if (pilisPhotoPath != null && pilisOutputPath != null)
     ExportPilisTopView(pilisPhotoPath, pilisOutputPath);
 
@@ -378,6 +380,125 @@ static void RunCurvedSlantedBoundaryTest()
     AssertPointOnLine(correction.GetScreenPosition(new Pos(6.0, 0.0)), near, "curved near-right boundary");
     AssertPointOnLine(correction.GetScreenPosition(new Pos(0.0, 10.0)), far, "curved far-left boundary");
     AssertPointOnLine(correction.GetScreenPosition(new Pos(6.0, 10.0)), far, "curved far-right boundary");
+}
+
+static void RunCurvedMatchesStraightModelTest()
+{
+    // Straight edges entered as multi-point "curves" must reproduce the projective
+    // straight-line model, including perspective foreshortening along the length.
+    PerspectiveCorrection straight = CreateCorrection(100, 400, 1100, 800);
+    PerspectiveCorrection curved = CreateCorrection(100, 400, 1100, 800);
+    curved.LeftEdgePoints = SampleLine(straight.LeftEdge, 5);
+    curved.RightEdgePoints = SampleLine(straight.RightEdge, 5);
+
+    foreach (double x in new[] { 0.0, 1.5, 3.0, 4.5, 6.0 })
+    {
+        foreach (double y in new[] { 0.0, 2.0, 4.0, 6.0, 8.0, 10.0 })
+        {
+            Pos expected = straight.GetScreenPosition(new Pos(x, y));
+            Pos actual = curved.GetScreenPosition(new Pos(x, y));
+            AssertClose(expected.X, actual.X, $"curved-straight match: screen X at ({x},{y})", 0.5);
+            AssertClose(expected.Y, actual.Y, $"curved-straight match: screen Y at ({x},{y})", 0.5);
+        }
+    }
+}
+
+static void RunParallelArcsPerspectiveTest()
+{
+    // Real road: circular centerline arc (radius 40 m), width 4 m. The two edges are
+    // parallel arcs with different curvature (radius 42 and 38). Project through a real
+    // pinhole camera, feed the projected edge polylines to the correction — with edge
+    // point counts that intentionally differ — then verify real positions are recovered.
+    const double roadWidth = 4.0;
+    const double roadLength = 10.0;
+    const double centerRadius = 40.0;
+
+    List<Pos> leftEdge = ProjectArc(centerRadius + roadWidth / 2.0, centerRadius, roadLength, 13);
+    List<Pos> rightEdge = ProjectArc(centerRadius - roadWidth / 2.0, centerRadius, roadLength, 9);
+
+    PerspectiveCorrection correction = new PerspectiveCorrection
+    {
+        PavementWidth = roadWidth,
+        Length = roadLength,
+        Normalized = true
+    };
+    correction.NormalizeCurved(leftEdge, rightEdge, roadLength, roadWidth);
+    Assert(correction.Normalized, "Parallel-arc geometry must normalize.");
+
+    foreach (double x in new[] { 0.5, 2.0, 3.5 })
+    {
+        foreach (double y in new[] { 1.0, 3.0, 5.0, 7.0, 9.0 })
+        {
+            // Tolerances: the 1/width^2 stationing is exact for straight edges and for the
+            // constant-curvature pairing, but a strongly pitched camera combined with an
+            // oblique curving heading leaves a few-percent residual — acceptable for the
+            // aggressive geometry of this test (14 degree heading change, 14 degree pitch).
+            Pos screen = ProjectRoadPoint(x, y, centerRadius, roadWidth);
+            Pos real = correction.GetRealPosition(screen);
+            AssertClose(x, real.X, $"parallel arcs: real X at ({x},{y})", 0.15);
+            AssertClose(y, real.Y, $"parallel arcs: real Y at ({x},{y})", 0.35);
+
+            Pos roundTrip = correction.GetRealPosition(correction.GetScreenPosition(real));
+            AssertClose(real.X, roundTrip.X, $"parallel arcs: X round trip at ({x},{y})", 1e-4);
+            AssertClose(real.Y, roundTrip.Y, $"parallel arcs: Y round trip at ({x},{y})", 1e-4);
+        }
+    }
+}
+
+// Ground plane: camera at origin, height 2.5 m, looking along +Z with slight downward pitch.
+// Road centerline: arc of given radius starting 6 m ahead, initially heading along +Z.
+static Pos ProjectGroundPoint(double groundX, double groundZ)
+{
+    const double cameraHeight = 2.5;
+    const double focal = 1500.0;
+    const double pitch = 0.25; // radians, downward
+
+    double yWorld = -cameraHeight;
+    double yCam = yWorld * Math.Cos(pitch) + groundZ * Math.Sin(pitch);
+    double zCam = -yWorld * Math.Sin(pitch) + groundZ * Math.Cos(pitch);
+
+    return new Pos(
+        960.0 + focal * groundX / zCam,
+        640.0 - focal * yCam / zCam);
+}
+
+static Pos ProjectRoadPoint(double lateralX, double longitudinalY, double centerRadius, double roadWidth)
+{
+    // Lateral X measured from the left edge; the road curves to the right.
+    double radius = centerRadius + roadWidth / 2.0 - lateralX;
+    double angle = longitudinalY / centerRadius;
+    double groundX = centerRadius - radius * Math.Cos(angle);
+    double groundZ = 6.0 + radius * Math.Sin(angle);
+    return ProjectGroundPoint(groundX, groundZ);
+}
+
+static List<Pos> ProjectArc(double radius, double centerRadius, double roadLength, int pointCount)
+{
+    List<Pos> points = new List<Pos>();
+    for (int i = 0; i < pointCount; i++)
+    {
+        double arcLength = roadLength * radius / centerRadius * i / (pointCount - 1);
+        double angle = arcLength / radius;
+        double groundX = centerRadius - radius * Math.Cos(angle);
+        double groundZ = 6.0 + radius * Math.Sin(angle);
+        points.Add(ProjectGroundPoint(groundX, groundZ));
+    }
+
+    return points;
+}
+
+static List<Pos> SampleLine(Line line, int pointCount)
+{
+    List<Pos> points = new List<Pos>();
+    for (int i = 0; i < pointCount; i++)
+    {
+        double amount = (double)i / (pointCount - 1);
+        points.Add(new Pos(
+            line.P0.X + (line.P1.X - line.P0.X) * amount,
+            line.P0.Y + (line.P1.Y - line.P0.Y) * amount));
+    }
+
+    return points;
 }
 
 static PerspectiveCorrection CreateCurvedCorrection()

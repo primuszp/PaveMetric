@@ -148,6 +148,12 @@ namespace PPR
 
         void drawingArea_OnCommandStateChanged(object sender, CommandEventArgs e)
         {
+            if (e.Command == 6)
+            {
+                MarkPerspectiveDirty();
+                return;
+            }
+
             if (e.Command <= 4 && e.Command > 0)
             {
                 if (e.Command == 3 && e.SubCommand == 1)
@@ -235,9 +241,24 @@ namespace PPR
             List<Pos> points = e.Points;
             List<Pos> before = e.Before;
             List<Pos> after = e.After;
+            List<Pos> companion = e.CompanionPoints;
+            List<Pos> companionBefore = e.CompanionBefore;
+            List<Pos> companionAfter = e.CompanionAfter;
             RecordOperation(
-                () => { RestorePoints(points, before); MarkPerspectiveDirty(); },
-                () => { RestorePoints(points, after); MarkPerspectiveDirty(); });
+                () =>
+                {
+                    RestorePoints(points, before);
+                    if (companion != null && companionBefore != null)
+                        RestorePoints(companion, companionBefore);
+                    MarkPerspectiveDirty();
+                },
+                () =>
+                {
+                    RestorePoints(points, after);
+                    if (companion != null && companionAfter != null)
+                        RestorePoints(companion, companionAfter);
+                    MarkPerspectiveDirty();
+                });
             MarkPerspectiveDirty();
         }
 
@@ -254,8 +275,18 @@ namespace PPR
         /// </summary>
         private void MarkPerspectiveDirty()
         {
+            if (_project.ActualPhoto != null)
+                _project.ActualPhoto.PerspectiveCorrection.Normalized = false;
+
+            // Keep the four editable boundary lines, but remove the derived grid.  It is no
+            // longer valid until the user normalizes the modified edges again.
+            if (drawingArea.Lines.Count > 4)
+                drawingArea.Lines.RemoveRange(4, drawingArea.Lines.Count - 4);
+
+            button_ToggleView.Enabled = false;
             button_Normalize.BackColor = Theme.Warning;
             button_Normalize.ToolTipText = "A szegélyek módosultak — normalizálás szükséges.";
+            drawingArea.RenderNeeded = true;
         }
 
         private void ClearPerspectiveDirty()

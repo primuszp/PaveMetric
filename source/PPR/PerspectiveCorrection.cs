@@ -128,83 +128,47 @@ namespace PPR
             Line leftLine = lines[2];
             Line rightLine = lines[3];
 
-            double nearDistance = nearLine.P0.Y;
-            double farDistance = farLine.P0.Y;
-            if (Math.Abs(nearDistance - farDistance) < 1e-9
-                || Math.Abs(leftLine.DeltaY) < 1e-9
-                || Math.Abs(rightLine.DeltaY) < 1e-9)
+            if (!TryGetLineIntersection(nearLine, leftLine, out Pos nearLeft)
+                || !TryGetLineIntersection(nearLine, rightLine, out Pos nearRight)
+                || !TryGetLineIntersection(farLine, leftLine, out Pos farLeft)
+                || !TryGetLineIntersection(farLine, rightLine, out Pos farRight))
                 return;
 
             Length = length;
             PavementWidth = width;
-            NearDistance = nearDistance;
-            FarDistance = farDistance;
+            NearDistance = (nearLeft.Y + nearRight.Y) / 2.0;
+            FarDistance = (farLeft.Y + farRight.Y) / 2.0;
+            if (Math.Abs(NearDistance - FarDistance) < 1e-9)
+                return;
 
-            if (leftLine.P0.X > leftLine.P1.X)
-            {
-                Pos temp = new Pos(leftLine.P1.X, leftLine.P1.Y);
-                leftLine.P1 = leftLine.P0;
-                leftLine.P0 = temp;
-            }
-            if (rightLine.P0.X < rightLine.P1.X)
-            {
-                Pos temp = new Pos(rightLine.P1.X, rightLine.P1.Y);
-                rightLine.P1 = rightLine.P0;
-                rightLine.P0 = temp;
-            }
-
-            double dx = leftLine.P1.X - leftLine.P0.X;
-            double dy = leftLine.P0.Y - leftLine.P1.Y;
-
-            double dyFar = leftLine.P1.Y - farDistance;
-            double dxFar = dyFar * dx / dy;
-
-            double xFarLeft = leftLine.P1.X + dxFar;
-            leftLine.P1.X = xFarLeft;
-            leftLine.P1.Y = farDistance;
-            farLine.P0.X = xFarLeft;
-
-            double dyNear = leftLine.P1.Y - nearDistance;
-            double dxNear = dyNear * dx / dy;
-
-            double xNearLeft = leftLine.P1.X + dxNear;
-            leftLine.P0.X = xNearLeft;
-            leftLine.P0.Y = nearDistance;
-            nearLine.P0.X = xNearLeft;
-
-            dx = rightLine.P1.X - rightLine.P0.X;
-            dy = rightLine.P0.Y - rightLine.P1.Y;
-
-            dyFar = rightLine.P1.Y - farDistance;
-            dxFar = dyFar * dx / dy;
-
-            double xFarRight = rightLine.P1.X + dxFar;
-            rightLine.P1.X = xFarRight;
-            rightLine.P1.Y = farDistance;
-            farLine.P1.X = xFarRight;
-
-            dyNear = rightLine.P1.Y - nearDistance;
-            dxNear = dyNear * dx / dy;
-
-            double xNearRight = rightLine.P1.X + dxNear;
-            rightLine.P0.X = xNearRight;
-            rightLine.P0.Y = nearDistance;
-            nearLine.P1.X = xNearRight;
-
-            LeftEdge.P0.X = leftLine.P0.X;
-            LeftEdge.P0.Y = nearDistance;
-            LeftEdge.P1.X = leftLine.P1.X;
-            LeftEdge.P1.Y = farDistance;
-
-            RightEdge.P0.X = rightLine.P0.X;
-            RightEdge.P0.Y = nearDistance;
-            RightEdge.P1.X = rightLine.P1.X;
-            RightEdge.P1.Y = farDistance;
-
-            LeftEdgePoints.Clear();
-            RightEdgePoints.Clear();
+            LeftEdge.P0 = ClonePoint(nearLeft);
+            LeftEdge.P1 = ClonePoint(farLeft);
+            RightEdge.P0 = ClonePoint(nearRight);
+            RightEdge.P1 = ClonePoint(farRight);
+            LeftEdgePoints = new List<Pos> { ClonePoint(nearLeft), ClonePoint(farLeft) };
+            RightEdgePoints = new List<Pos> { ClonePoint(nearRight), ClonePoint(farRight) };
             InvalidateCurvedGeometry();
             Normalized = true;
+        }
+
+        private static bool TryGetLineIntersection(Line first, Line second, out Pos intersection)
+        {
+            double ax = first.P1.X - first.P0.X;
+            double ay = first.P1.Y - first.P0.Y;
+            double bx = second.P1.X - second.P0.X;
+            double by = second.P1.Y - second.P0.Y;
+            double determinant = ax * by - ay * bx;
+            if (Math.Abs(determinant) < 1e-9)
+            {
+                intersection = null;
+                return false;
+            }
+
+            double dx = second.P0.X - first.P0.X;
+            double dy = second.P0.Y - first.P0.Y;
+            double amount = (dx * by - dy * bx) / determinant;
+            intersection = new Pos(first.P0.X + ax * amount, first.P0.Y + ay * amount);
+            return double.IsFinite(intersection.X) && double.IsFinite(intersection.Y);
         }
 
         public void NormalizeCurved(List<Pos> leftEdgePoints, List<Pos> rightEdgePoints, double length, double width)
@@ -250,7 +214,7 @@ namespace PPR
             return result;
         }
 
-        private static List<Pos> GetSmoothEdgePoints(List<Pos> points)
+        public static List<Pos> GetSmoothEdgePoints(List<Pos> points)
         {
             if (points.Count < 3)
                 return ClonePoints(points);
@@ -269,26 +233,37 @@ namespace PPR
                 for (int j = 1; j <= samplesPerSegment; j++)
                 {
                     double t = (double)j / samplesPerSegment;
-                    result.Add(CatmullRom(p0, p1, p2, p3, t));
+                    result.Add(CentripetalCatmullRom(p0, p1, p2, p3, t));
                 }
             }
 
             return result;
         }
 
-        private static Pos CatmullRom(Pos p0, Pos p1, Pos p2, Pos p3, double t)
+        private static Pos CentripetalCatmullRom(Pos p0, Pos p1, Pos p2, Pos p3, double amount)
         {
-            double t2 = t * t;
-            double t3 = t2 * t;
-            return new Pos(
-                0.5 * ((2.0 * p1.X)
-                    + (-p0.X + p2.X) * t
-                    + (2.0 * p0.X - 5.0 * p1.X + 4.0 * p2.X - p3.X) * t2
-                    + (-p0.X + 3.0 * p1.X - 3.0 * p2.X + p3.X) * t3),
-                0.5 * ((2.0 * p1.Y)
-                    + (-p0.Y + p2.Y) * t
-                    + (2.0 * p0.Y - 5.0 * p1.Y + 4.0 * p2.Y - p3.Y) * t2
-                    + (-p0.Y + 3.0 * p1.Y - 3.0 * p2.Y + p3.Y) * t3));
+            double t0 = 0.0;
+            double t1 = t0 + CentripetalKnot(p0, p1);
+            double t2 = t1 + CentripetalKnot(p1, p2);
+            double t3 = t2 + CentripetalKnot(p2, p3);
+            double t = Lerp(t1, t2, amount);
+            Pos a1 = InterpolateAt(p0, p1, t0, t1, t);
+            Pos a2 = InterpolateAt(p1, p2, t1, t2, t);
+            Pos a3 = InterpolateAt(p2, p3, t2, t3, t);
+            Pos b1 = InterpolateAt(a1, a2, t0, t2, t);
+            Pos b2 = InterpolateAt(a2, a3, t1, t3, t);
+            return InterpolateAt(b1, b2, t1, t2, t);
+        }
+
+        private static double CentripetalKnot(Pos first, Pos second)
+        {
+            return Math.Max(1e-6, Math.Sqrt(Math.Sqrt(DistanceSquared(first, second))));
+        }
+
+        private static Pos InterpolateAt(Pos first, Pos second, double start, double end, double value)
+        {
+            double fraction = (value - start) / (end - start);
+            return new Pos(Lerp(first.X, second.X, fraction), Lerp(first.Y, second.Y, fraction));
         }
 
         private static Pos ClonePoint(Pos point)
@@ -661,7 +636,7 @@ namespace PPR
                         {
                             double u = (double)x / Math.Max(1, width - 1);
                             Pos screen = ApplyHomography(topViewToScreen, u, v);
-                            SampleBilinear(sourceBase, sourceStride, sourceWidth, sourceHeight, screen.X, screen.Y, resultRow + x * 4);
+                            SampleBicubic(sourceBase, sourceStride, sourceWidth, sourceHeight, screen.X, screen.Y, resultRow + x * 4);
                         }
                     });
                 }
@@ -728,7 +703,7 @@ namespace PPR
 
                         for (int x = 0; x < width; x++)
                         {
-                            SampleBilinear(
+                            SampleBicubic(
                                 sourceBase, sourceStride, sourceWidth, sourceHeight,
                                 left.X + stepX * x, left.Y + stepY * x, resultRow + x * 4);
                         }
@@ -784,9 +759,13 @@ namespace PPR
 
                             for (int channel = 0; channel < 3; channel++)
                             {
-                                int sharpened = center[channel] * 6
-                                    - left[channel] - right[channel] - top[channel] - bottom[channel];
-                                output[channel] = (byte)Math.Clamp(sharpened / 2, 0, 255);
+                                // A small cross-shaped blur is subtracted from the original.
+                                // This unsharp mask avoids the harsh halos of the former
+                                // Laplacian-style filter while restoring some local contrast.
+                                double blur = (center[channel] * 4.0 + left[channel] + right[channel]
+                                    + top[channel] + bottom[channel]) / 8.0;
+                                double sharpened = center[channel] + (center[channel] - blur) * 0.6;
+                                output[channel] = (byte)Math.Clamp((int)Math.Round(sharpened), 0, 255);
                             }
                         }
                     });
@@ -924,7 +903,7 @@ namespace PPR
                 (h[3] * u + h[4] * v + h[5]) / denominator);
         }
 
-        private static unsafe void SampleBilinear(
+        private static unsafe void SampleBicubic(
             byte* source,
             int stride,
             int width,
@@ -942,30 +921,38 @@ namespace PPR
                 return;
             }
 
-            int ix = Math.Min((int)x, width - 1);
-            int iy = Math.Min((int)y, height - 1);
+            int ix = (int)Math.Floor(x);
+            int iy = (int)Math.Floor(y);
             double fx = x - ix;
             double fy = y - iy;
-            int x0 = Math.Min(ix, Math.Max(0, width - 2));
-            int y0 = Math.Min(iy, Math.Max(0, height - 2));
-            int x1 = Math.Min(x0 + 1, width - 1);
-            int y1 = Math.Min(y0 + 1, height - 1);
-            byte* p00 = source + y0 * stride + x0 * 4;
-            byte* p10 = source + y0 * stride + x1 * 4;
-            byte* p01 = source + y1 * stride + x0 * 4;
-            byte* p11 = source + y1 * stride + x1 * 4;
-
-            if (ix == width - 1)
-                fx = 1.0;
-            if (iy == height - 1)
-                fy = 1.0;
 
             for (int channel = 0; channel < 4; channel++)
             {
-                double top = p00[channel] + (p10[channel] - p00[channel]) * fx;
-                double bottom = p01[channel] + (p11[channel] - p01[channel]) * fx;
-                target[channel] = (byte)(top + (bottom - top) * fy);
+                double row0 = SampleCubicRow(source, stride, width, Math.Clamp(iy - 1, 0, height - 1), ix, fx, channel);
+                double row1 = SampleCubicRow(source, stride, width, Math.Clamp(iy, 0, height - 1), ix, fx, channel);
+                double row2 = SampleCubicRow(source, stride, width, Math.Clamp(iy + 1, 0, height - 1), ix, fx, channel);
+                double row3 = SampleCubicRow(source, stride, width, Math.Clamp(iy + 2, 0, height - 1), ix, fx, channel);
+
+                target[channel] = (byte)Math.Clamp(
+                    (int)Math.Round(CubicInterpolate(row0, row1, row2, row3, fy)), 0, 255);
             }
+        }
+
+        private static unsafe double SampleCubicRow(byte* source, int stride, int width, int y, int x, double amount, int channel)
+        {
+            byte* row = source + y * stride;
+            double p0 = row[Math.Clamp(x - 1, 0, width - 1) * 4 + channel];
+            double p1 = row[Math.Clamp(x, 0, width - 1) * 4 + channel];
+            double p2 = row[Math.Clamp(x + 1, 0, width - 1) * 4 + channel];
+            double p3 = row[Math.Clamp(x + 2, 0, width - 1) * 4 + channel];
+            return CubicInterpolate(p0, p1, p2, p3, amount);
+        }
+
+        private static double CubicInterpolate(double p0, double p1, double p2, double p3, double amount)
+        {
+            return p1 + 0.5 * amount * (p2 - p0 + amount *
+                (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3 + amount *
+                (3.0 * (p1 - p2) + p3 - p0)));
         }
 
         /// <summary>

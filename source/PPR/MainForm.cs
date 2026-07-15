@@ -482,11 +482,20 @@ namespace PPR
             if (_project.ActualPhoto != null)
             {
                 fileName = GetPhotoFilePath(_project.ActualPhoto);
-                _perspectiveBitmap?.Dispose();
-                _topViewBitmap?.Dispose();
+                // Load and publish the replacement before disposing the current images.
+                // DrawingArea may repaint after an Invalidate call, so it must never retain
+                // a reference to an already disposed bitmap.
+                Bitmap previousPerspectiveBitmap = _perspectiveBitmap;
+                Bitmap previousTopViewBitmap = _topViewBitmap;
+                Bitmap replacementPerspectiveBitmap = LoadPhotoBitmap(fileName);
+
+                _perspectiveBitmap = replacementPerspectiveBitmap;
                 _topViewBitmap = null;
-                _perspectiveBitmap = LoadPhotoBitmap(fileName);
                 drawingArea.Photo = _perspectiveBitmap;
+                drawingArea.FitImageToView();
+
+                previousTopViewBitmap?.Dispose();
+                previousPerspectiveBitmap?.Dispose();
                 PrefetchNeighborPhotos();
 
                 drawingArea.PavementPhoto = _project.ActualPhoto;
@@ -742,8 +751,7 @@ namespace PPR
 
                 _project.ActualPhoto.PerspectiveCorrection.Normalize(lines, length, width);
             }
-            _topViewBitmap?.Dispose();
-            _topViewBitmap = null;
+            DisposeTopViewBitmap();
 
             ClearPerspectiveDirty();
             DrawNet();
@@ -863,6 +871,7 @@ namespace PPR
 
         private void MainForm_FormClosed(object sender, FormClosedEventArgs e)
         {
+            drawingArea.Photo = null;
             _topViewBitmap?.Dispose();
             _perspectiveBitmap?.Dispose();
             lock (_prefetchSync)
@@ -870,6 +879,18 @@ namespace PPR
                 _prefetchBitmap?.Dispose();
                 _prefetchBitmap = null;
             }
+        }
+
+        private void DisposeTopViewBitmap()
+        {
+            if (ReferenceEquals(drawingArea.Photo, _topViewBitmap))
+            {
+                drawingArea.TopViewEnabled = false;
+                drawingArea.Photo = _perspectiveBitmap;
+            }
+
+            _topViewBitmap?.Dispose();
+            _topViewBitmap = null;
         }
 
         private void button_Previous_Click(object sender, EventArgs e)

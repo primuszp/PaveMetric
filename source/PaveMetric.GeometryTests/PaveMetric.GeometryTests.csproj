@@ -9,8 +9,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\PaveMetric\PaveMetric.csproj" />
+    <ProjectReference Include="..\PaveMetric.WinForm\PaveMetric.WinForm.csproj" />
   </ItemGroup>
 
 </Project>
+
 

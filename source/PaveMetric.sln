@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 16
 VisualStudioVersion = 16.0.31702.278
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PaveMetric", "PaveMetric\PaveMetric.csproj", "{CFCB193E-50A0-475D-86F1-00F19372A0F9}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PaveMetric.WinForm", "PaveMetric.WinForm\PaveMetric.WinForm.csproj", "{CFCB193E-50A0-475D-86F1-00F19372A0F9}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PaveMetric.GeometryTests", "PaveMetric.GeometryTests\PaveMetric.GeometryTests.csproj", "{4F805EE1-B8EB-44DB-A50F-2FA426F244FF}"
 EndProject
@@ -49,4 +49,5 @@ Global
 		SolutionGuid = {1FB95DA8-D813-42EF-85F1-624F64912375}
 	EndGlobalSection
 EndGlobal
+
 

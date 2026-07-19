@@ -5,7 +5,7 @@ using System.Drawing.Imaging;
 using System.Threading.Tasks;
 using System.Xml.Serialization;
 
-namespace PPR
+namespace PaveMetric
 {
     [Serializable]
     public class PerspectiveCorrection

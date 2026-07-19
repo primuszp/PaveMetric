@@ -1,4 +1,4 @@
-﻿namespace PPR
+﻿namespace PaveMetric
 {
     partial class MainForm
     {
@@ -74,8 +74,8 @@
             this.groupBox_Net = new System.Windows.Forms.GroupBox();
             this.numericUpDown_Row = new System.Windows.Forms.NumericUpDown();
             this.numericUpDown_Col = new System.Windows.Forms.NumericUpDown();
-            this.errorLayerGroup = new PPR.ErrorLayerGroup();
-            this.drawingArea = new PPR.DrawingArea();
+            this.errorLayerGroup = new PaveMetric.ErrorLayerGroup();
+            this.drawingArea = new PaveMetric.DrawingArea();
             this.toolStripButton1 = new System.Windows.Forms.ToolStripButton();
             this.projectToolStrip.SuspendLayout();
             this.statusStrip1.SuspendLayout();
@@ -714,4 +714,5 @@
         private System.Windows.Forms.ToolStripButton toolStripButton1;
     }
 }
+
 

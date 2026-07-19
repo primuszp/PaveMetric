@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace PPR
+namespace PaveMetric
 {
     [Serializable]
     public class SurfaceError

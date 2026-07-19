@@ -1,4 +1,4 @@
-﻿namespace PPR
+﻿namespace PaveMetric
 {
     public enum ErrorCodes : int
     {

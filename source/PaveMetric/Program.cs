@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Windows.Forms;
 
-namespace PPR
+namespace PaveMetric
 {
     static class Program
     {

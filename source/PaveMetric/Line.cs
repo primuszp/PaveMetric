@@ -2,7 +2,7 @@
 using System.Drawing;
 using System.Xml.Serialization;
 
-namespace PPR
+namespace PaveMetric
 {
     [Serializable]
     public class Pos

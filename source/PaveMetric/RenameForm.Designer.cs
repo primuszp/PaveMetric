@@ -1,5 +1,5 @@
 ﻿
-namespace PPR
+namespace PaveMetric
 {
     partial class RenameForm
     {

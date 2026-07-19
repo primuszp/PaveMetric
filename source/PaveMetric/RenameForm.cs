@@ -3,7 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows.Forms;
 
-namespace PPR
+namespace PaveMetric
 {
     public partial class RenameForm : Form
     {

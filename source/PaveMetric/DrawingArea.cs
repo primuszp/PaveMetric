@@ -4,7 +4,7 @@ using System.Windows.Forms;
 using System.Drawing.Drawing2D;
 using System.Collections.Generic;
 
-namespace PPR
+namespace PaveMetric
 {
     public partial class DrawingArea : UserControl
     {

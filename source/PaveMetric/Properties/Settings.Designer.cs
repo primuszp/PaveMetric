@@ -8,7 +8,7 @@
 // </auto-generated>
 //------------------------------------------------------------------------------
 
-namespace PPR.Properties {
+namespace PaveMetric.Properties {
     
     
     [global::System.Runtime.CompilerServices.CompilerGeneratedAttribute()]

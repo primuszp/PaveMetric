@@ -21,6 +21,8 @@ namespace PPR
         readonly object _prefetchSync = new object();
         string _prefetchFileName;
         Bitmap _prefetchBitmap;
+        ErrorTypeToolbox _errorTypeToolbox;
+        ToolStripButton _button_ErrorTypes;
 
         public MainForm()
         {
@@ -119,6 +121,53 @@ namespace PPR
             newLayer.OnVisibleStateChanged += new EventHandler(ErrorLayer_OnVisibleStateChanged);
             newLayer.OnDeleteButtonClick += new EventHandler(ErrorLayer_OnDeleteButtonClick);
             errorLayerGroup.SetActiveLayer(newLayer);
+
+            // errorLayerGroup stays in the left panel (palette); the toolbox is a
+            // separate floating editor for renaming/recoloring types.
+            _errorTypeToolbox = new ErrorTypeToolbox(errorLayerGroup);
+            _errorTypeToolbox.UserClosed += (s, e) => _button_ErrorTypes.Checked = false;
+            _errorTypeToolbox.TypeAdded += newLayer =>
+            {
+                newLayer.OnActionButtonClick += new EventHandler(ErrorLayer_OnActionButtonClick);
+                newLayer.OnDeleteButtonClick += new EventHandler(ErrorLayer_OnDeleteButtonClick);
+                newLayer.OnVisibleStateChanged += new EventHandler(ErrorLayer_OnVisibleStateChanged);
+                _project.ErrorLayers.Add(newLayer);
+                drawingArea.ErrorLayers.Add(newLayer);
+                drawingArea.RenderNeeded = true;
+            };
+            _errorTypeToolbox.TypeRemoved += layer =>
+            {
+                _project.ErrorLayers.Remove(layer);
+                drawingArea.ErrorLayers.Remove(layer);
+                if (drawingArea.ActualError.ErrorCode == layer.ErrorCode)
+                    drawingArea.Command = 0;
+                drawingArea.RenderNeeded = true;
+            };
+
+            _button_ErrorTypes = new ToolStripButton("Hibatípusok")
+            {
+                DisplayStyle = ToolStripItemDisplayStyle.Text,
+                AutoToolTip = false,
+                ToolTipText = "Hibatípusok szerkesztése (név, szín, kód)",
+                CheckOnClick = true,
+            };
+            _button_ErrorTypes.CheckedChanged += (s, e) =>
+            {
+                if (_button_ErrorTypes.Checked)
+                {
+                    _errorTypeToolbox.Populate();
+                    if (!_errorTypeToolbox.Visible)
+                        _errorTypeToolbox.Location = new Point(Right + 4, Top + 80);
+                    _errorTypeToolbox.Show(this);
+                }
+                else
+                {
+                    _errorTypeToolbox.Hide();
+                }
+            };
+
+            toolStrip1.Items.Add(new ToolStripSeparator());
+            toolStrip1.Items.Add(_button_ErrorTypes);
         }
 
         void ErrorLayer_OnDeleteButtonClick(object sender, EventArgs e)
@@ -134,6 +183,7 @@ namespace PPR
         {
             ErrorLayerControl layer = sender as ErrorLayerControl;
             errorLayerGroup.SetActiveLayer(layer);
+            drawingArea.RenderNeeded = true;
         }
 
         void ErrorLayer_OnActionButtonClick(object sender, EventArgs e)
@@ -172,10 +222,10 @@ namespace PPR
                     double startSection = _project.ActualPhoto.Section;
                     Pos realPos0 = drawingArea.ViewToRealPosition(drawingArea.AreaPos0);
                     Pos realPos1 = drawingArea.ViewToRealPosition(drawingArea.AreaPos1);
-                    drawingArea.ActualError.Left = Math.Min(realPos0.X, realPos1.X) - pavementWidth_2;
-                    drawingArea.ActualError.Right = Math.Max(realPos0.X, realPos1.X) - pavementWidth_2;
-                    drawingArea.ActualError.StartSection = Math.Min(realPos0.Y, realPos1.Y) + startSection;
-                    drawingArea.ActualError.EndSection = Math.Max(realPos0.Y, realPos1.Y) + startSection;
+                    drawingArea.ActualError.Left = drawingArea.SnapX(Math.Min(realPos0.X, realPos1.X) - pavementWidth_2);
+                    drawingArea.ActualError.Right = drawingArea.SnapX(Math.Max(realPos0.X, realPos1.X) - pavementWidth_2);
+                    drawingArea.ActualError.StartSection = drawingArea.SnapY(Math.Min(realPos0.Y, realPos1.Y) + startSection);
+                    drawingArea.ActualError.EndSection = drawingArea.SnapY(Math.Max(realPos0.Y, realPos1.Y) + startSection);
                     if (drawingArea.ActualError.Right - drawingArea.ActualError.Left < 0.001
                         || drawingArea.ActualError.EndSection - drawingArea.ActualError.StartSection < 0.001)
                     {
@@ -278,12 +328,16 @@ namespace PPR
             if (_project.ActualPhoto != null)
                 _project.ActualPhoto.PerspectiveCorrection.Normalized = false;
 
-            // Keep the four editable boundary lines, but remove the derived grid.  It is no
-            // longer valid until the user normalizes the modified edges again.
             if (drawingArea.Lines.Count > 4)
                 drawingArea.Lines.RemoveRange(4, drawingArea.Lines.Count - 4);
 
+            if (drawingArea.TopViewEnabled)
+                SetTopView(false);
+
+            DisposeTopViewBitmap();
             button_ToggleView.Enabled = false;
+            button_ToggleView.Checked = false;
+            button_Normalize.Checked = false;
             button_Normalize.BackColor = Theme.Warning;
             button_Normalize.ToolTipText = "A szegélyek módosultak — normalizálás szükséges.";
             drawingArea.RenderNeeded = true;
@@ -293,6 +347,7 @@ namespace PPR
         {
             button_Normalize.BackColor = Theme.Surface;
             button_Normalize.ToolTipText = string.Empty;
+            button_Normalize.Checked = true;
         }
 
         void drawingArea_ErrorEditCompleted(object sender, ErrorEditEventArgs e)
@@ -577,11 +632,14 @@ namespace PPR
                 {
                     DrawNet();
                     button_ToggleView.Enabled = true;
+                    button_Normalize.Checked = true;
+                    button_Normalize.BackColor = Theme.Surface;
                 }
                 else
                 {
                     drawingArea.ClearLines();
                     button_ToggleView.Enabled = false;
+                    button_Normalize.Checked = false;
                 }
             }
             else
@@ -752,8 +810,9 @@ namespace PPR
 
             TryParseDouble(textBox_SectionLength.Text, out var length);
             TryParseDouble(textBox_PavementWidth.Text, out var width);
-            SnapCurveEndpointsToBoundaries(drawingArea.LeftEdgeCurvePoints, drawingArea.Lines[1].P0.Y, drawingArea.Lines[0].P0.Y);
-            SnapCurveEndpointsToBoundaries(drawingArea.RightEdgeCurvePoints, drawingArea.Lines[1].P0.Y, drawingArea.Lines[0].P0.Y);
+            SnapCurveEndpointsToBoundaries(
+                drawingArea.LeftEdgeCurvePoints, drawingArea.RightEdgeCurvePoints,
+                drawingArea.Lines[1], drawingArea.Lines[0]);
 
             _project.ActualPhoto.PerspectiveCorrection.Length = length;
             _project.ActualPhoto.PerspectiveCorrection.PavementWidth = width;
@@ -822,13 +881,20 @@ namespace PPR
             return line.P0.X + (line.P1.X - line.P0.X) * amount;
         }
 
-        private static void SnapCurveEndpointsToBoundaries(List<Pos> points, double nearY, double farY)
+        private static void SnapCurveEndpointsToBoundaries(
+            List<Pos> leftPoints, List<Pos> rightPoints,
+            Line nearBoundary, Line farBoundary)
         {
-            if (points == null || points.Count < 2)
-                return;
-
-            points[0].Y = nearY;
-            points[points.Count - 1].Y = farY;
+            if (leftPoints != null && leftPoints.Count >= 2)
+            {
+                leftPoints[0].Y = nearBoundary.P0.Y;
+                leftPoints[leftPoints.Count - 1].Y = farBoundary.P0.Y;
+            }
+            if (rightPoints != null && rightPoints.Count >= 2)
+            {
+                rightPoints[0].Y = nearBoundary.P1.Y;
+                rightPoints[rightPoints.Count - 1].Y = farBoundary.P1.Y;
+            }
         }
 
         private bool HasCurvedEdges()

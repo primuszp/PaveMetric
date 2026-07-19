@@ -34,7 +34,6 @@ namespace PPR
         private double boundaryLastMouseY;
         private Pos boundaryPivot;
         private double boundaryAngle;
-        private readonly Pos[] boundaryPivots = new Pos[2];
         private List<Pos> activeCurveEditPoints;
         private List<Pos> activeCompanionCurvePoints;
         private int activeCurveHandle = -1;
@@ -44,8 +43,35 @@ namespace PPR
         private int hoverCurveHandle = -1;
         private bool hoverCurveMidpoint;
         private SurfaceError errorBeforeEdit;
+        private Pos errorMoveOrigin;
         private List<Pos> curvePointsBeforeEdit;
         private List<Pos> companionCurvePointsBeforeEdit;
+
+        public static double Snap(double value, double step, double origin = 0.0)
+            => step <= 1e-9 ? value : Math.Round((value - origin) / step) * step + origin;
+
+        private static double SubdivideCell(double cellSize, double targetStep = 0.05)
+        {
+            if (cellSize <= 1e-9) return targetStep;
+            int n = Math.Max(1, (int)Math.Round(cellSize / targetStep));
+            return cellSize / n;
+        }
+
+        public double SnapX(double errorX)
+        {
+            var pc = PavementPhoto?.PerspectiveCorrection;
+            if (pc == null || pc.ColCount <= 0) return Snap(errorX, 0.05);
+            double step = SubdivideCell(pc.PavementWidth / pc.ColCount);
+            return Snap(errorX, step, -pc.PavementWidth / 2.0);
+        }
+
+        public double SnapY(double errorY)
+        {
+            var pc = PavementPhoto?.PerspectiveCorrection;
+            if (pc == null || pc.RowCount <= 0) return Snap(errorY, 0.05);
+            double step = SubdivideCell(pc.Length / pc.RowCount);
+            return Snap(errorY, step, PavementPhoto.Section);
+        }
         private bool topViewEnabled;
         private bool fastPaint;
         private readonly Timer fastPaintTimer;
@@ -375,13 +401,17 @@ namespace PPR
                             Invalidate();
                         }
 
+                        bool insideError = hoveredHandle < 0 && SelectedError != null
+                            && IsInsideSelectedError(x_Mouse, y_Mouse);
                         Cursor = curveHandle >= 0
                             ? Cursors.SizeAll
                             : hoveredHandle == 0 || hoveredHandle == 2
                                 ? Cursors.SizeNWSE
                                 : hoveredHandle == 1 || hoveredHandle == 3
                                     ? Cursors.SizeNESW
-                                    : Cursors.Default;
+                                    : insideError
+                                        ? Cursors.SizeAll
+                                        : Cursors.Default;
                     }
                     else if (hoverCurveEditPoints != null || hoverCurveHandle >= 0)
                     {
@@ -447,7 +477,10 @@ namespace PPR
                     }
                     else if (activeErrorHandle >= 0 && SelectedError != null)
                     {
-                        UpdateSelectedErrorFromHandle(activeErrorHandle, x0 + e.X / zoom, y0 + e.Y / zoom);
+                        if (activeErrorHandle == 4)
+                            MoveSelectedError(x0 + e.X / zoom, y0 + e.Y / zoom);
+                        else
+                            UpdateSelectedErrorFromHandle(activeErrorHandle, x0 + e.X / zoom, y0 + e.Y / zoom);
                         RenderNeeded = true;
                     }
                     else if (activeCurveHandle >= 0 && activeCurveEditPoints != null)
@@ -456,9 +489,15 @@ namespace PPR
                         double previousY = activeCurveEditPoints[activeCurveHandle].Y;
                         activeCurveEditPoints[activeCurveHandle].X = x0 + e.X / zoom;
                         if (activeCurveHandle == 0)
-                            activeCurveEditPoints[activeCurveHandle].Y = Lines[1].P0.Y;
+                        {
+                            bool isLeft = ReferenceEquals(activeCurveEditPoints, LeftEdgeCurvePoints);
+                            activeCurveEditPoints[activeCurveHandle].Y = isLeft ? Lines[1].P0.Y : Lines[1].P1.Y;
+                        }
                         else if (activeCurveHandle == activeCurveEditPoints.Count - 1)
-                            activeCurveEditPoints[activeCurveHandle].Y = Lines[0].P0.Y;
+                        {
+                            bool isLeft = ReferenceEquals(activeCurveEditPoints, LeftEdgeCurvePoints);
+                            activeCurveEditPoints[activeCurveHandle].Y = isLeft ? Lines[0].P0.Y : Lines[0].P1.Y;
+                        }
                         else
                             activeCurveEditPoints[activeCurveHandle].Y = y0 + e.Y / zoom;
 
@@ -533,11 +572,23 @@ namespace PPR
 
                     if (command == 0 && PavementPhoto != null)
                     {
+                        if (e.Clicks >= 2)
+                        {
+                            int resetLine = HitTestBoundaryTiltHandle(e.Location);
+                            if (resetLine >= 0)
+                            {
+                                ResetBoundaryToHorizontal(resetLine);
+                                RaiseCommandStateChanged(6, resetLine, 0, 0);
+                                RenderNeeded = true;
+                                break;
+                            }
+                        }
+
                         activeBoundaryLine = HitTestBoundaryTiltHandle(e.Location);
                         if (activeBoundaryLine >= 0)
                         {
                             boundaryLastMouseY = y_Mouse;
-                            Line boundary = Lines[activeBoundaryLine];
+                            Line boundary = GetDisplayLine(activeBoundaryLine);
                             boundaryPivot = GetBoundaryPivot(activeBoundaryLine);
                             boundaryAngle = Math.Atan2(boundary.P1.Y - boundary.P0.Y, boundary.P1.X - boundary.P0.X);
                             break;
@@ -551,6 +602,9 @@ namespace PPR
                                 ? RightEdgeCurvePoints
                                 : LeftEdgeCurvePoints;
                             if (activeCompanionCurvePoints.Count != activeCurveEditPoints.Count)
+                                activeCompanionCurvePoints = null;
+                            // Endpoints define pavement width independently — no companion drag.
+                            if (activeCurveHandle == 0 || activeCurveHandle == activeCurveEditPoints.Count - 1)
                                 activeCompanionCurvePoints = null;
                             companionCurvePointsBeforeEdit = activeCompanionCurvePoints == null
                                 ? null
@@ -577,6 +631,16 @@ namespace PPR
                             break;
                         }
 
+                        if (SelectedError != null && IsInsideSelectedError(x_Mouse, y_Mouse))
+                        {
+                            activeErrorHandle = 4;
+                            errorBeforeEdit = SelectedError.Clone();
+                            Pos real = ViewToRealPosition(new Pos(x_Mouse, y_Mouse));
+                            double pw2 = PavementPhoto.PerspectiveCorrection.PavementWidth / 2.0;
+                            errorMoveOrigin = new Pos(real.X - pw2, real.Y + PavementPhoto.Section);
+                            break;
+                        }
+
                         SelectErrorAt(x_Mouse, y_Mouse);
                         break;
                     }
@@ -589,7 +653,6 @@ namespace PPR
                             Lines[0].P1.X = photo.Width;
                             Lines[0].P0.Y = y_Mouse;
                             Lines[0].P1.Y = y_Mouse;
-                            boundaryPivots[0] = null;
                             command = 0;
                             RenderNeeded = true;
                             break;
@@ -599,7 +662,6 @@ namespace PPR
                             Lines[1].P1.X = photo.Width;
                             Lines[1].P0.Y = y_Mouse;
                             Lines[1].P1.Y = y_Mouse;
-                            boundaryPivots[1] = null;
                             command = 0;
                             RenderNeeded = true;
                             break;
@@ -797,12 +859,14 @@ namespace PPR
                     }
 
                     Color areaColor = Color.FromArgb(100, 128, 128, 128);
+                    Color borderColor = Color.Gray;
                     bool on = false;
                     foreach (ErrorLayerControl myLayer in ErrorLayers)
                     {
                         if (myLayer.ErrorCode == myError.ErrorCode)
                         {
                             areaColor = Color.FromArgb(128, myLayer.LayerColor.R, myLayer.LayerColor.G, myLayer.LayerColor.B);
+                            borderColor = myLayer.LayerColor;
                             on = myLayer.IsVisible;
                             break;
                         }
@@ -812,6 +876,9 @@ namespace PPR
                     {
                         using SolidBrush brush = new SolidBrush(areaColor);
                         controlDC.FillPolygon(brush, points);
+
+                        using Pen borderPen = new Pen(borderColor, 2.0f);
+                        controlDC.DrawPolygon(borderPen, points);
 
                         if (ReferenceEquals(myError, SelectedError))
                             DrawErrorSelection(points, GetErrorScreenPoints(myError));
@@ -967,8 +1034,8 @@ namespace PPR
         {
             double pavementWidth2 = PavementPhoto.PerspectiveCorrection.PavementWidth / 2.0;
             Pos real = ViewToRealPosition(new Pos(screenX, screenY));
-            double x = real.X - pavementWidth2;
-            double y = real.Y + PavementPhoto.Section;
+            double x = SnapX(real.X - pavementWidth2);
+            double y = SnapY(real.Y + PavementPhoto.Section);
             const double minimumSize = 0.001;
 
             if (handle == 0 || handle == 3)
@@ -980,6 +1047,41 @@ namespace PPR
                 SelectedError.StartSection = Math.Min(y, SelectedError.EndSection - minimumSize);
             else
                 SelectedError.EndSection = Math.Max(y, SelectedError.StartSection + minimumSize);
+        }
+
+        private void MoveSelectedError(double screenX, double screenY)
+        {
+            double pw2 = PavementPhoto.PerspectiveCorrection.PavementWidth / 2.0;
+            Pos real = ViewToRealPosition(new Pos(screenX, screenY));
+            double currentX = real.X - pw2;
+            double currentY = real.Y + PavementPhoto.Section;
+
+            double dx = currentX - errorMoveOrigin.X;
+            double dy = currentY - errorMoveOrigin.Y;
+            double w = errorBeforeEdit.Right - errorBeforeEdit.Left;
+            double h = errorBeforeEdit.EndSection - errorBeforeEdit.StartSection;
+
+            double newLeft = SnapX(errorBeforeEdit.Left + dx);
+            double newStart = SnapY(errorBeforeEdit.StartSection + dy);
+            SelectedError.Left = newLeft;
+            SelectedError.Right = newLeft + w;
+            SelectedError.StartSection = newStart;
+            SelectedError.EndSection = newStart + h;
+        }
+
+        private bool IsInsideSelectedError(double screenX, double screenY)
+        {
+            if (SelectedError == null || PavementPhoto == null
+                || !PavementPhoto.PerspectiveCorrection.Normalized
+                || !IsErrorVisible(SelectedError))
+                return false;
+
+            double pw2 = PavementPhoto.PerspectiveCorrection.PavementWidth / 2.0;
+            Pos real = ViewToRealPosition(new Pos(screenX, screenY));
+            double x = real.X - pw2;
+            double y = real.Y + PavementPhoto.Section;
+            return x > SelectedError.Left && x < SelectedError.Right
+                && y > SelectedError.StartSection && y < SelectedError.EndSection;
         }
 
         private int HitTestSelectedHandle(Point mousePoint)
@@ -1179,11 +1281,12 @@ namespace PPR
         {
             for (int i = 0; i < 2 && i < Lines.Count; i++)
             {
-                if (Math.Abs(Lines[i].P1.X - Lines[i].P0.X) < 1e-6 && Math.Abs(Lines[i].P1.Y - Lines[i].P0.Y) < 1e-6)
+                Line displayLine = GetDisplayLine(i);
+                if (Math.Abs(displayLine.P1.X - displayLine.P0.X) < 1e-6 && Math.Abs(displayLine.P1.Y - displayLine.P0.Y) < 1e-6)
                     continue;
                 Pos center = GetBoundaryPivot(i);
                 PointF point = ToControlPoint(center);
-                int hitRadius = Math.Max(16, CurveHitRadius + 6);
+                int hitRadius = CurveHitRadius;
                 if (Math.Abs(mousePoint.X - point.X) <= hitRadius && Math.Abs(mousePoint.Y - point.Y) <= hitRadius)
                     return i;
             }
@@ -1192,14 +1295,10 @@ namespace PPR
 
         private Pos GetBoundaryPivot(int lineIndex)
         {
-            if (boundaryPivots[lineIndex] == null)
-            {
-                Line line = Lines[lineIndex];
-                boundaryPivots[lineIndex] = new Pos(
-                    (line.P0.X + line.P1.X) / 2.0,
-                    (line.P0.Y + line.P1.Y) / 2.0);
-            }
-            return boundaryPivots[lineIndex];
+            Line line = GetDisplayLine(lineIndex);
+            return new Pos(
+                (line.P0.X + line.P1.X) / 2.0,
+                (line.P0.Y + line.P1.Y) / 2.0);
         }
 
         private void RotateBoundaryAroundPivot(int boundaryIndex)
@@ -1207,21 +1306,85 @@ namespace PPR
             if (boundaryPivot == null || Lines.Count < 4)
                 return;
 
-            double dx = Math.Cos(boundaryAngle);
-            double dy = Math.Sin(boundaryAngle);
-            Line rotatingLine = new Line
-            {
-                P0 = new Pos(boundaryPivot.X - dx * 100000.0, boundaryPivot.Y - dy * 100000.0),
-                P1 = new Pos(boundaryPivot.X + dx * 100000.0, boundaryPivot.Y + dy * 100000.0)
-            };
+            bool hasCurves = LeftEdgeCurvePoints.Count >= 2 && RightEdgeCurvePoints.Count >= 2;
+            Pos left, right;
 
-            if (!TryGetInfiniteLineIntersection(rotatingLine, Lines[2], out Pos left)
-                || !TryGetInfiniteLineIntersection(rotatingLine, Lines[3], out Pos right))
-                return;
+            if (hasCurves)
+            {
+                int leftIdx = boundaryIndex == 0 ? LeftEdgeCurvePoints.Count - 1 : 0;
+                int rightIdx = boundaryIndex == 0 ? RightEdgeCurvePoints.Count - 1 : 0;
+                double leftX = LeftEdgeCurvePoints[leftIdx].X;
+                double rightX = RightEdgeCurvePoints[rightIdx].X;
+                double cos = Math.Cos(boundaryAngle);
+                if (Math.Abs(cos) < 1e-9)
+                    return;
+                double slope = Math.Sin(boundaryAngle) / cos;
+                left = new Pos(leftX, boundaryPivot.Y + slope * (leftX - boundaryPivot.X));
+                right = new Pos(rightX, boundaryPivot.Y + slope * (rightX - boundaryPivot.X));
+            }
+            else
+            {
+                double dx = Math.Cos(boundaryAngle);
+                double dy = Math.Sin(boundaryAngle);
+                Line rotatingLine = new Line
+                {
+                    P0 = new Pos(boundaryPivot.X - dx * 100000.0, boundaryPivot.Y - dy * 100000.0),
+                    P1 = new Pos(boundaryPivot.X + dx * 100000.0, boundaryPivot.Y + dy * 100000.0)
+                };
+                if (!TryGetInfiniteLineIntersection(rotatingLine, Lines[2], out left)
+                    || !TryGetInfiniteLineIntersection(rotatingLine, Lines[3], out right))
+                    return;
+            }
 
             Line boundary = Lines[boundaryIndex];
             boundary.P0 = left;
             boundary.P1 = right;
+            if (boundaryIndex == 0)
+            {
+                Lines[2].P1 = new Pos(left.X, left.Y);
+                Lines[3].P1 = new Pos(right.X, right.Y);
+                if (hasCurves)
+                {
+                    LeftEdgeCurvePoints[LeftEdgeCurvePoints.Count - 1].Y = left.Y;
+                    RightEdgeCurvePoints[RightEdgeCurvePoints.Count - 1].Y = right.Y;
+                }
+            }
+            else
+            {
+                Lines[2].P0 = new Pos(left.X, left.Y);
+                Lines[3].P0 = new Pos(right.X, right.Y);
+                if (hasCurves)
+                {
+                    LeftEdgeCurvePoints[0].Y = left.Y;
+                    RightEdgeCurvePoints[0].Y = right.Y;
+                }
+            }
+        }
+
+        private void ResetBoundaryToHorizontal(int boundaryIndex)
+        {
+            Pos pivot = GetBoundaryPivot(boundaryIndex);
+            double y = pivot.Y;
+            bool hasCurves = LeftEdgeCurvePoints.Count >= 2 && RightEdgeCurvePoints.Count >= 2;
+
+            Pos left, right;
+            if (hasCurves)
+            {
+                int leftIdx = boundaryIndex == 0 ? LeftEdgeCurvePoints.Count - 1 : 0;
+                int rightIdx = boundaryIndex == 0 ? RightEdgeCurvePoints.Count - 1 : 0;
+                left = new Pos(LeftEdgeCurvePoints[leftIdx].X, y);
+                right = new Pos(RightEdgeCurvePoints[rightIdx].X, y);
+                LeftEdgeCurvePoints[leftIdx].Y = y;
+                RightEdgeCurvePoints[rightIdx].Y = y;
+            }
+            else
+            {
+                left = new Pos(GetEdgeXAtY(Lines[2], y), y);
+                right = new Pos(GetEdgeXAtY(Lines[3], y), y);
+            }
+
+            Lines[boundaryIndex].P0 = left;
+            Lines[boundaryIndex].P1 = right;
             if (boundaryIndex == 0)
             {
                 Lines[2].P1 = new Pos(left.X, left.Y);
@@ -1232,6 +1395,14 @@ namespace PPR
                 Lines[2].P0 = new Pos(left.X, left.Y);
                 Lines[3].P0 = new Pos(right.X, right.Y);
             }
+        }
+
+        private static double GetEdgeXAtY(Line edge, double y)
+        {
+            double dy = edge.P1.Y - edge.P0.Y;
+            if (Math.Abs(dy) < 1e-9)
+                return edge.P0.X;
+            return edge.P0.X + (edge.P1.X - edge.P0.X) * (y - edge.P0.Y) / dy;
         }
 
         private static bool TryGetInfiniteLineIntersection(Line first, Line second, out Pos intersection)
@@ -1258,12 +1429,12 @@ namespace PPR
         {
             if (lineIndex >= Lines.Count)
                 return;
-            Line line = Lines[lineIndex];
+            Line line = GetDisplayLine(lineIndex);
             if (Math.Abs(line.P1.X - line.P0.X) < 1e-6 && Math.Abs(line.P1.Y - line.P0.Y) < 1e-6)
                 return;
             Pos center = GetBoundaryPivot(lineIndex);
             PointF point = ToControlPoint(center);
-            int radius = Math.Max(10, CurveHandleRadius + 4);
+            int radius = Math.Max(6, CurveHandleRadius + 2);
             using SolidBrush fill = new SolidBrush(activeBoundaryLine == lineIndex ? Color.Orange : Color.LimeGreen);
             controlDC.FillEllipse(fill, point.X - radius, point.Y - radius, radius * 2, radius * 2);
             controlDC.DrawEllipse(Pens.Black, point.X - radius, point.Y - radius, radius * 2, radius * 2);

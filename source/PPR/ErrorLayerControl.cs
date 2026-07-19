@@ -1,10 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
+using System;
 using System.Drawing;
-using System.Data;
-using System.Linq;
-using System.Text;
 using System.Windows.Forms;
 
 namespace PPR
@@ -12,60 +7,60 @@ namespace PPR
     public partial class ErrorLayerControl : UserControl
     {
         bool isActive = false;
-
         ErrorLayerGroup parentGroup = null;
         string layerName = "Anonymous";
+        Color layerColor = Color.Gray;
+        ErrorCodes errorCode;
 
         public string LayerName
         {
-            get
-            {
-                return layerName;
-            }
+            get => layerName;
             set
             {
                 layerName = value;
-                textBox_LayerName.Text = layerName;
+                if (label_LayerName != null)
+                    label_LayerName.Text = value;
             }
         }
 
         public bool IsVisible
         {
-            get
-            {
-                return checkBox_Visible.Checked;
-            }
-            set
-            {
-                checkBox_Visible.Checked = value;
-            }
+            get => checkBox_Visible.Checked;
+            set => checkBox_Visible.Checked = value;
         }
 
-        Color layerColor = Color.Gray;
         public Color LayerColor
         {
-            get
-            {
-                return layerColor;
-            }
+            get => layerColor;
             set
             {
                 layerColor = value;
-                button_Color.BackColor = value;
+                if (button_Color != null)
+                    button_Color.BackColor = value;
             }
         }
 
-        public ErrorCodes ErrorCode { get; set; }
+        public ErrorCodes ErrorCode
+        {
+            get => errorCode;
+            set => errorCode = value;
+        }
 
         public bool IsActive
         {
-            get { return isActive; }
+            get => isActive;
             set
             {
                 isActive = value;
-                BackColor = isActive ? Theme.AccentSoft : Theme.Surface;
-                textBox_LayerName.BackColor = BackColor;
-                textBox_LayerName.ForeColor = isActive ? Theme.Accent : Theme.Text;
+                Color bg = isActive ? Theme.AccentSoft : Theme.Surface;
+                BackColor = bg;
+                if (label_LayerName != null)
+                {
+                    label_LayerName.BackColor = bg;
+                    label_LayerName.ForeColor = isActive ? Theme.Accent : Theme.Text;
+                }
+                if (button_Select != null)
+                    button_Select.FlatAppearance.BorderColor = isActive ? Theme.Accent : Theme.Border;
             }
         }
 
@@ -78,32 +73,29 @@ namespace PPR
             parentGroup = ParentGroup;
             InitializeComponent();
             Theme.Apply(this);
-            textBox_LayerName.BorderStyle = BorderStyle.None;
-            textBox_LayerName.BackColor = Theme.Surface;
+            button_Color.FlatAppearance.BorderColor = Theme.Border;
         }
 
-        private void button_Action_Click(object sender, EventArgs e)
+        private void button_Color_Click(object sender, EventArgs e)
         {
-            if (OnActionButtonClick != null)
-            {
-                OnActionButtonClick(this, e);
-            }
+            using var dlg = new ColorDialog { Color = layerColor, FullOpen = true };
+            if (dlg.ShowDialog() == DialogResult.OK)
+                LayerColor = dlg.Color;
         }
 
-        private void checkBox_Visible_CheckedChanged(object sender, EventArgs e)
+        private void button_Select_Click(object sender, EventArgs e)
         {
-            if (OnVisibleStateChanged != null)
-            {
-                OnVisibleStateChanged(this, e);
-            }
+            OnActionButtonClick?.Invoke(this, EventArgs.Empty);
         }
 
         private void button_Delete_Click(object sender, EventArgs e)
         {
-            if (OnDeleteButtonClick != null)
-            {
-                OnDeleteButtonClick(this, e);
-            }
+            OnDeleteButtonClick?.Invoke(this, EventArgs.Empty);
+        }
+
+        private void checkBox_Visible_CheckedChanged(object sender, EventArgs e)
+        {
+            OnVisibleStateChanged?.Invoke(this, e);
         }
     }
 }

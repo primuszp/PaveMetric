@@ -1,10 +1,5 @@
-﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Drawing;
-using System.Data;
-using System.Linq;
-using System.Text;
 using System.Windows.Forms;
 
 namespace PPR
@@ -13,53 +8,46 @@ namespace PPR
     {
         List<ErrorLayerControl> errorLayers = new List<ErrorLayerControl>();
 
-        public List<ErrorLayerControl> ErrorLayers
-        {
-            get { return errorLayers; }
-        }
+        public List<ErrorLayerControl> ErrorLayers => errorLayers;
 
         public ErrorLayerControl ActiveLayer
         {
             get
             {
-                foreach (ErrorLayerControl myLayer in errorLayers)
-                {
-                    if (myLayer.IsActive)
-                    {
-                        return myLayer;
-                    }
-                }
-
+                foreach (ErrorLayerControl layer in errorLayers)
+                    if (layer.IsActive) return layer;
                 return null;
             }
         }
 
-        public void SetActiveLayer(ErrorLayerControl ActiveLayerControl)
+        public void SetActiveLayer(ErrorLayerControl activeLayer)
         {
-            foreach (ErrorLayerControl myLayer in errorLayers)
-            {
-                myLayer.IsActive = false;
-            }
-
-            ActiveLayerControl.IsActive = true;
+            foreach (ErrorLayerControl layer in errorLayers)
+                layer.IsActive = false;
+            activeLayer.IsActive = true;
         }
 
         public ErrorLayerGroup()
         {
             InitializeComponent();
-            VerticalScroll.Visible = true;
+            AutoScroll = true;
         }
 
-        public void AddLayer(ErrorLayerControl NewLayer)
+        public void AddLayer(ErrorLayerControl newLayer)
         {
-            if (NewLayer != null)
-            {
-                NewLayer.Parent = this;
-                NewLayer.Dock = DockStyle.Top;
-                errorLayers.Add(NewLayer);
-                //this.AutoScroll = true;
-                //this.HorizontalScroll.Enabled = false;
-            }
+            if (newLayer == null) return;
+            newLayer.Parent = this;
+            newLayer.Dock = DockStyle.Top;
+            errorLayers.Add(newLayer);
+            newLayer.SendToBack();
+        }
+
+        public void RemoveLayer(ErrorLayerControl layer)
+        {
+            if (layer == null) return;
+            errorLayers.Remove(layer);
+            Controls.Remove(layer);
+            layer.Dispose();
         }
     }
 }

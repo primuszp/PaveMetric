@@ -1,134 +1,161 @@
 # PaveMetric
 
-PaveMetric is a Windows Forms desktop application for pavement photo review, perspective correction, and road surface defect assessment.
+**PaveMetric** is a Windows desktop application for the objective assessment of road surface condition using photogrammetric methods. It transforms perspective pavement photographs into rectified top-down views, enabling precise measurement and classification of surface defects.
 
-The application was originally built as `PPR` and stores its working project data in `.ppr` files. The solution is kept under [`source/PPR.sln`](source/PPR.sln).
+The software was developed at the **University of Sopron, Institute of Geomatics and Civil Engineering** (*Soproni Egyetem, Geomatikai és Kultúrmérnöki Intézet*).
 
-## Features
+---
 
-- Import pavement photos from a folder of `.jpg` files
-- Navigate road sections by photo/chainage
-- Calibrate pavement geometry with near/far distance lines and left/right road edges
-- Normalize photos with perspective correction
-- Configure pavement width, section length, and correction grid density
-- Mark, show, hide, and delete defect layers
-- Save and reopen `.ppr` project files
-- Import FRODO `.log` data
-- Export defect summaries to `.txt`
-- Render marked defect images into an `Errors` output folder
+## Background
+
+The methodology implemented in PaveMetric was first published in 2013 in *Útügyi Lapok*, a Hungarian road engineering journal:
+
+> **Markó G. & Primusz P.** (2013): *Útburkolatok felületi állapotának objektív minősítése fotogrammetriai eljárással* [Objective assessment of road surface condition by photogrammetric methods]. *Útügyi Lapok*, 2013. június.  
+> https://utugyilapok.hu/2013/06/utburkolatok-feluleti-allapotanak-objektiv-minositese-fotogrammetriai-eljarassal/
+
+The paper describes a field and office workflow for recording surface defects on asphalt-paved roads. Photographs are taken from eye level at marked stations along the road, then processed in software to derive the exact location and total area of each defect type. Field measurements of approximately 10 m sections yield an accuracy sufficient for repair planning and cost estimation.
+
+---
+
+## Key Features
+
+- **Perspective correction** — calibrate each photo using road edge lines and near/far reference markers to map image pixels to real-world pavement coordinates
+- **Rectified top-down view** — toggle between the original perspective image and a corrected overhead projection
+- **Defect marking** — draw axis-aligned rectangles over surface defects; each defect belongs to a configurable type layer
+- **Configurable defect types** — add, remove, rename, and recolour defect layers at runtime via the type editor toolbox
+- **Snap grid** — cursor snaps to a sub-grid aligned to the drawn measurement grid for accurate boundary placement
+- **Section navigation** — browse a folder of sequential `.jpg` photos organised by chainage
+- **Export** — defect summaries as `.txt` reports and rendered defect overlays into an `Errors` output folder
+- **Project files** — save and reopen work as `.ppr` (PaveMetric Project) files
+- **Undo / Redo** — full edit history with `Ctrl+Z` / `Ctrl+Y`
+
+---
 
 ## Supported Defect Types
 
-The current defect model includes:
+| Code | English name | Hungarian name |
+|-----:|---|---|
+| 10 | Map crack | Hálós repedés |
+| 11 | Alligator crack | Hálós repedés deformációval |
+| 12 | Longitudinal crack | Hosszirányú repedés |
+| 13 | Cross crack | Keresztirányú repedés |
+| 14 | Pothole | Kátyú |
+| 15 | Filled pothole | Kitöltött kátyú |
+| 16 | Surface peel-off | Felületi hámlás |
+| 17 | Surface perspiration | Izzadás |
 
-- Map crack
-- Alligator crack
-- Longitudinal crack
-- Cross crack
-- Pothole
-- Filled pothole
-- Surface peel-off
-- Surface perspiration
+The type list is fully configurable in the running application; new types can be added and existing ones deleted or renamed.
 
-## Repository Layout
-
-```text
-.
-|-- README.md
-|-- .gitignore
-`-- source
-    |-- PPR.sln
-    `-- PPR
-        |-- PPR.csproj
-        |-- MainForm.cs
-        |-- DrawingArea.cs
-        |-- Project.cs
-        |-- PerspectiveCorrection.cs
-        |-- Graphics/
-        `-- Properties/
-```
+---
 
 ## Requirements
 
-- Windows
-- Visual Studio 2022 or newer with the .NET desktop development workload
-- .NET 8 SDK
+- Windows 10 or later
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- Visual Studio 2022 (recommended) with the **.NET desktop development** workload, or the .NET CLI
+
+---
 
 ## Build
 
 Open the solution in Visual Studio:
 
-```text
-source/PPR.sln
+```
+source/PaveMetric.sln
 ```
 
-Then build the `PPR` project with the desired configuration.
-
-From PowerShell, the complete solution can be built with the .NET CLI:
+Or build from the command line:
 
 ```powershell
-dotnet build source\PPR.sln -c Release
+dotnet build source\PaveMetric.sln -c Release
 ```
 
-Run the geometry regression checks with:
+Run the geometry regression tests:
 
 ```powershell
-dotnet run --project source\PPR.GeometryTests\PPR.GeometryTests.csproj -c Release
+dotnet run --project source\PaveMetric.GeometryTests\PaveMetric.GeometryTests.csproj -c Release
 ```
 
-The built executable is generated under:
+The built executable is placed under:
 
-```text
-source/PPR/bin/Release/net8.0-windows/
 ```
+source/PaveMetric.WinForm/bin/Release/net8.0-windows/
+```
+
+---
 
 ## Basic Workflow
 
-1. Start the application.
-2. Import a folder containing `.jpg` pavement photos.
-3. Select a section/photo from the section selector.
-4. Set the section length and pavement width.
-5. Mark the far distance, near distance, left edge, and right edge reference lines.
-6. Run normalization to apply perspective correction.
-7. Add defect markings using the configured defect layers.
-8. Save the project as a `.ppr` file.
-9. Export defect reports or rendered defect images as needed.
+1. **Import** a folder of `.jpg` pavement photos (`File › Import`).
+2. **Select** a section from the section navigator.
+3. **Set geometry** — enter the pavement width and section length.
+4. **Calibrate** — mark the far distance, near distance, left edge, and right edge reference lines on the image.
+5. **Normalize** — run perspective correction; toggle the top-down view with the *Felülnézet* toolbar button.
+6. **Mark defects** — select a defect layer, then drag on the image to draw defect rectangles.
+7. **Save** the project as a `.ppr` file.
+8. **Export** — generate text reports or rendered defect images.
 
-## Defect Editing
+### Defect editing shortcuts
 
-- Activate a defect layer, then drag on the pavement image to create a defect rectangle.
-- Press `Escape` to return to selection mode.
-- Click a visible defect to select it.
-- Drag a corner handle to resize the selected defect.
-- Press `Delete` to remove the selected defect.
-- Press `Ctrl+Z` to undo.
-- Press `Ctrl+Y` or `Ctrl+Shift+Z` to redo.
-- After perspective normalization, use the `Felülnézet` toolbar button to switch between the original perspective image and a rectified top-down view.
+| Action | Input |
+|---|---|
+| Draw defect rectangle | Drag on image (active layer selected) |
+| Cancel drawing | `Escape` |
+| Select defect | Click on a visible defect |
+| Resize defect | Drag a corner handle |
+| Delete selected defect | `Delete` |
+| Undo | `Ctrl+Z` |
+| Redo | `Ctrl+Y` or `Ctrl+Shift+Z` |
 
-## Input Conventions
+---
 
-Photo files are expected to be `.jpg` images. During import, the application uses the file name without extension as the photo identifier and attempts to derive the section value from it.
+## Photo Naming Convention
 
-For example:
+Photos should be named after their starting chainage, for example:
 
-```text
-0+120.jpg
+```
+0+120.jpg   →  section starting at chainage 0+120
+0+130.jpg   →  next section
 ```
 
-is interpreted as a chainage-like section value after removing the `+` character.
+The `+` character is stripped when parsing the section value.
 
-## Generated Files
+---
 
-The repository intentionally excludes local Visual Studio state and build output:
+## Repository Layout
 
-- `.vs/`
-- `bin/`
-- `obj/`
-- `*.pdb`
-- cache and user-specific IDE files
+```
+.
+├── README.md
+└── source
+    ├── PaveMetric.sln
+    ├── PaveMetric.WinForm/          # Windows Forms application
+    │   ├── PaveMetric.WinForm.csproj
+    │   ├── MainForm.cs
+    │   ├── DrawingArea.cs
+    │   ├── PerspectiveCorrection.cs
+    │   ├── Project.cs
+    │   ├── ErrorLayerControl.cs
+    │   ├── ErrorTypeToolbox.cs
+    │   ├── Theme.cs
+    │   └── Graphics/
+    └── PaveMetric.GeometryTests/    # Geometry regression tests
+        └── PaveMetric.GeometryTests.csproj
+```
 
-These files are generated locally and should not be committed.
+---
 
-## Project Status
+## Authors
 
-The application has been migrated from .NET Framework 4.8 to an SDK-style .NET 8 Windows Forms project. The original desktop workflow and `.ppr` project format remain intact.
+| Role | Name | Affiliation |
+|---|---|---|
+| Original developer | **Markó Gergely** | Budapest University of Technology and Economics, Department of Highway and Railway Engineering |
+| Current developer | **Primusz Péter** | University of Sopron, Institute of Geomatics and Civil Engineering |
+
+---
+
+## Institution
+
+**Soproni Egyetem — Geomatikai és Kultúrmérnöki Intézet**  
+University of Sopron — Institute of Geomatics and Civil Engineering  
+https://uni-sopron.hu

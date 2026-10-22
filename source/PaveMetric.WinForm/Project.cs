@@ -251,10 +251,10 @@ namespace PaveMetric
                                 switch (myErrorCode)
                                 {
                                     case 5:
-                                        newSurfaceError.ErrorCode = ErrorCodes.MapCrack;
+                                        newSurfaceError.ErrorCode = (int)ErrorCodes.MapCrack;
                                         break;
                                     case 6:
-                                        newSurfaceError.ErrorCode = ErrorCodes.AlligatorCrack;
+                                        newSurfaceError.ErrorCode = (int)ErrorCodes.AlligatorCrack;
                                         break;
                                 }
 
@@ -303,13 +303,18 @@ namespace PaveMetric
             var index = 0;
             using var writer = new StreamWriter(fileName, false, Encoding.Default);
 
-            writer.Write("Start\tEnd\t");
-            for (var i = 10; i <= 17; i++)
+            // one column per catalog entry, plus any code that only occurs in the data
+            var codes = ErrorLayers.Select(l => l.ErrorCode)
+                .Concat(_photos.SelectMany(p => p.Errors).Select(e => e.ErrorCode))
+                .Distinct().OrderBy(c => c).ToList();
+
+            writer.Write("Start\tEnd");
+            foreach (var code in codes)
             {
-                writer.Write((ErrorCodes)i);
-                if (i < 17) writer.Write('\t');
-                else writer.WriteLine();
+                var layer = ErrorLayers.FirstOrDefault(l => l.ErrorCode == code);
+                writer.Write('\t' + (layer != null ? $"{code} {layer.LayerName}" : code.ToString()));
             }
+            writer.WriteLine();
 
             foreach (var myPhoto in _photos)
             {
@@ -323,28 +328,23 @@ namespace PaveMetric
                     correctedPavementArea = 0.5 * (width1 + width2) * myPhoto.PerspectiveCorrection.Length;
                 }
 
-                var errorAreaList = new double[18];
-                var errorAreaPercentList = new double[18];
+                var errorAreaList = new Dictionary<int, double>();
 
                 foreach (var myError in myPhoto.Errors)
                 {
-                    var errorCode = (int)myError.ErrorCode;
+                    var errorCode = myError.ErrorCode;
                     var errorArea = (myError.Right - myError.Left) * (myError.EndSection - myError.StartSection);
                     double errorAreaPercent = errorArea / pavementArea;
                     double correctedErrorArea = correctedPavementArea * errorAreaPercent;
 
-                    errorAreaList[errorCode] += correctedErrorArea;
-                    errorAreaPercentList[errorCode] += errorAreaPercent;
+                    errorAreaList[errorCode] = errorAreaList.GetValueOrDefault(errorCode) + correctedErrorArea;
                 }
 
-                writer.Write(myPhoto.Section.ToString("0.00") + '\t' + (myPhoto.Section + myPhoto.PerspectiveCorrection.Length).ToString("0.00") + '\t');
+                writer.Write(myPhoto.Section.ToString("0.00") + '\t' + (myPhoto.Section + myPhoto.PerspectiveCorrection.Length).ToString("0.00"));
 
-                for (var i = 10; i <= 17; i++)
-                {
-                    writer.Write(errorAreaList[i].ToString("0"));
-                    if (i < 17) writer.Write('\t');
-                    else writer.WriteLine();
-                }
+                foreach (var code in codes)
+                    writer.Write('\t' + errorAreaList.GetValueOrDefault(code).ToString("0"));
+                writer.WriteLine();
                 index++;
             }
             writer.Close();
@@ -366,17 +366,17 @@ namespace PaveMetric
                     correctedPavementArea = 0.5 * (width0 + width1) * _photos[i].PerspectiveCorrection.Length;
                 }
 
-                var errorAreaPercentList = new double[18];
+                var errorAreaPercentList = new Dictionary<int, double>();
 
                 foreach (var error in _photos[i].Errors)
                 {
-                    var errorCode = (int)error.ErrorCode;
+                    var errorCode = error.ErrorCode;
                     var errorArea = (error.Right - error.Left) * (error.EndSection - error.StartSection);
 
                     double errorAreaPercent = errorArea / pavementArea;
                     double correctedErrorArea = correctedPavementArea * errorAreaPercent;
 
-                    errorAreaPercentList[errorCode] += errorAreaPercent;
+                    errorAreaPercentList[errorCode] = errorAreaPercentList.GetValueOrDefault(errorCode) + errorAreaPercent;
                 }
 
                 writer.Write(_photos[i].Section.ToString("0.00") + '\t' + (_photos[i].Section +
@@ -384,10 +384,10 @@ namespace PaveMetric
 
                 // Technology decision
 
-                var errorAC = errorAreaPercentList[(int)ErrorCodes.AlligatorCrack];
-                var errorFP = errorAreaPercentList[(int)ErrorCodes.FilledPothole];
-                var errorMC = errorAreaPercentList[(int)ErrorCodes.MapCrack];
-                var errorPH = errorAreaPercentList[(int)ErrorCodes.Pothole];
+                var errorAC = errorAreaPercentList.GetValueOrDefault((int)ErrorCodes.AlligatorCrack);
+                var errorFP = errorAreaPercentList.GetValueOrDefault((int)ErrorCodes.FilledPothole);
+                var errorMC = errorAreaPercentList.GetValueOrDefault((int)ErrorCodes.MapCrack);
+                var errorPH = errorAreaPercentList.GetValueOrDefault((int)ErrorCodes.Pothole);
 
                 var technoDecisionList = new double[4];
 

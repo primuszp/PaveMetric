@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -39,7 +39,8 @@ namespace PaveMetric
             newLayer.Parent = this;
             newLayer.Dock = DockStyle.Top;
             errorLayers.Add(newLayer);
-            newLayer.SendToBack();
+            // docked controls stack in reverse z-order: keep list order top-to-bottom
+            newLayer.BringToFront();
         }
 
         public void RemoveLayer(ErrorLayerControl layer)

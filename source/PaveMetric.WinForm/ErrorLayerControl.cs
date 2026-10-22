@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -10,7 +10,7 @@ namespace PaveMetric
         ErrorLayerGroup parentGroup = null;
         string layerName = "Anonymous";
         Color layerColor = Color.Gray;
-        ErrorCodes errorCode;
+        int errorCode;
 
         public string LayerName
         {
@@ -40,7 +40,7 @@ namespace PaveMetric
             }
         }
 
-        public ErrorCodes ErrorCode
+        public int ErrorCode
         {
             get => errorCode;
             set => errorCode = value;
@@ -67,6 +67,8 @@ namespace PaveMetric
         public event EventHandler OnActionButtonClick;
         public event EventHandler OnDeleteButtonClick;
         public event EventHandler OnVisibleStateChanged;
+
+        public ErrorType ToErrorType() => new ErrorType(errorCode, layerName, layerColor);
 
         public ErrorLayerControl(ErrorLayerGroup ParentGroup)
         {

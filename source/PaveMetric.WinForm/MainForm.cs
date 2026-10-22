@@ -8,6 +8,7 @@ using System.IO;
 using System.Xml;
 using System.Xml.Serialization;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace PaveMetric
 {
@@ -23,6 +24,7 @@ namespace PaveMetric
         Bitmap _prefetchBitmap;
         ErrorTypeToolbox _errorTypeToolbox;
         ToolStripButton _button_ErrorTypes;
+        readonly ToolTip toolTip_Dimensions = new ToolTip();
 
         public MainForm()
         {
@@ -53,86 +55,19 @@ namespace PaveMetric
             drawingArea.ErrorEditCompleted += drawingArea_ErrorEditCompleted;
             drawingArea.CurveEditCompleted += drawingArea_CurveEditCompleted;
 
-            ErrorLayerControl newLayer = new ErrorLayerControl(errorLayerGroup);
-            errorLayerGroup.AddLayer(newLayer);
-            _project.ErrorLayers.Add(newLayer);
-            newLayer.LayerName = "Kitöltött kátyú";
-            newLayer.ErrorCode = ErrorCodes.FilledPothole;
-            newLayer.LayerColor = Color.LightBlue;
-            newLayer.IsVisible = true;
-            newLayer.OnActionButtonClick += new EventHandler(ErrorLayer_OnActionButtonClick);
-            newLayer.OnVisibleStateChanged += new EventHandler(ErrorLayer_OnVisibleStateChanged);
-            newLayer.OnDeleteButtonClick += new EventHandler(ErrorLayer_OnDeleteButtonClick);
-
-            newLayer = new ErrorLayerControl(errorLayerGroup);
-            errorLayerGroup.AddLayer(newLayer);
-            _project.ErrorLayers.Add(newLayer);
-            newLayer.LayerName = "Kátyú";
-            newLayer.ErrorCode = ErrorCodes.Pothole;
-            newLayer.LayerColor = Color.Blue;
-            newLayer.IsVisible = true;
-            newLayer.OnActionButtonClick += new EventHandler(ErrorLayer_OnActionButtonClick);
-            newLayer.OnVisibleStateChanged += new EventHandler(ErrorLayer_OnVisibleStateChanged);
-            newLayer.OnDeleteButtonClick += new EventHandler(ErrorLayer_OnDeleteButtonClick);
-
-            newLayer = new ErrorLayerControl(errorLayerGroup);
-            errorLayerGroup.AddLayer(newLayer);
-            _project.ErrorLayers.Add(newLayer);
-            newLayer.LayerName = "Hálós repedés deformációval";
-            newLayer.ErrorCode = ErrorCodes.AlligatorCrack;
-            newLayer.LayerColor = Color.Red;
-            newLayer.IsVisible = true;
-            newLayer.OnActionButtonClick += new EventHandler(ErrorLayer_OnActionButtonClick);
-            newLayer.OnVisibleStateChanged += new EventHandler(ErrorLayer_OnVisibleStateChanged);
-            newLayer.OnDeleteButtonClick += new EventHandler(ErrorLayer_OnDeleteButtonClick);
-
-            newLayer = new ErrorLayerControl(errorLayerGroup);
-            errorLayerGroup.AddLayer(newLayer);
-            _project.ErrorLayers.Add(newLayer);
-            newLayer.LayerName = "Hálós repedés";
-            newLayer.ErrorCode = ErrorCodes.MapCrack;
-            newLayer.LayerColor = Color.Pink;
-            newLayer.IsVisible = true;
-            newLayer.OnActionButtonClick += new EventHandler(ErrorLayer_OnActionButtonClick);
-            newLayer.OnVisibleStateChanged += new EventHandler(ErrorLayer_OnVisibleStateChanged);
-            newLayer.OnDeleteButtonClick += new EventHandler(ErrorLayer_OnDeleteButtonClick);
-            errorLayerGroup.SetActiveLayer(newLayer);
-
-            newLayer = new ErrorLayerControl(errorLayerGroup);
-            errorLayerGroup.AddLayer(newLayer);
-            _project.ErrorLayers.Add(newLayer);
-            newLayer.LayerName = "Felületi hámlás";
-            newLayer.ErrorCode = ErrorCodes.SurfacePeelOff;
-            newLayer.LayerColor = Color.Yellow;
-            newLayer.IsVisible = true;
-            newLayer.OnActionButtonClick += new EventHandler(ErrorLayer_OnActionButtonClick);
-            newLayer.OnVisibleStateChanged += new EventHandler(ErrorLayer_OnVisibleStateChanged);
-            newLayer.OnDeleteButtonClick += new EventHandler(ErrorLayer_OnDeleteButtonClick);
-            errorLayerGroup.SetActiveLayer(newLayer);
-
-            newLayer = new ErrorLayerControl(errorLayerGroup);
-            errorLayerGroup.AddLayer(newLayer);
-            _project.ErrorLayers.Add(newLayer);
-            newLayer.LayerName = "Izzadás";
-            newLayer.ErrorCode = ErrorCodes.SurfacePerspiration;
-            newLayer.LayerColor = Color.Green;
-            newLayer.IsVisible = true;
-            newLayer.OnActionButtonClick += new EventHandler(ErrorLayer_OnActionButtonClick);
-            newLayer.OnVisibleStateChanged += new EventHandler(ErrorLayer_OnVisibleStateChanged);
-            newLayer.OnDeleteButtonClick += new EventHandler(ErrorLayer_OnDeleteButtonClick);
-            errorLayerGroup.SetActiveLayer(newLayer);
+            foreach (ErrorType type in ErrorCatalog.Load())
+                AddErrorLayer(type);
+            if (errorLayerGroup.ErrorLayers.Count > 0)
+                errorLayerGroup.SetActiveLayer(errorLayerGroup.ErrorLayers[0]);
 
             // errorLayerGroup stays in the left panel (palette); the toolbox is a
-            // separate floating editor for renaming/recoloring types.
+            // separate floating editor for the error catalog (code, name, color).
             _errorTypeToolbox = new ErrorTypeToolbox(errorLayerGroup);
+            _errorTypeToolbox.CountUsage = CountErrorsWithCode;
             _errorTypeToolbox.UserClosed += (s, e) => _button_ErrorTypes.Checked = false;
             _errorTypeToolbox.TypeAdded += newLayer =>
             {
-                newLayer.OnActionButtonClick += new EventHandler(ErrorLayer_OnActionButtonClick);
-                newLayer.OnDeleteButtonClick += new EventHandler(ErrorLayer_OnDeleteButtonClick);
-                newLayer.OnVisibleStateChanged += new EventHandler(ErrorLayer_OnVisibleStateChanged);
-                _project.ErrorLayers.Add(newLayer);
-                drawingArea.ErrorLayers.Add(newLayer);
+                WireErrorLayer(newLayer);
                 drawingArea.RenderNeeded = true;
             };
             _errorTypeToolbox.TypeRemoved += layer =>
@@ -141,6 +76,12 @@ namespace PaveMetric
                 drawingArea.ErrorLayers.Remove(layer);
                 if (drawingArea.ActualError.ErrorCode == layer.ErrorCode)
                     drawingArea.Command = 0;
+                drawingArea.RenderNeeded = true;
+            };
+            _errorTypeToolbox.CodeChanged += RemapErrorCode;
+            _errorTypeToolbox.CatalogChanged += (s, e) =>
+            {
+                SaveErrorCatalog();
                 drawingArea.RenderNeeded = true;
             };
 
@@ -168,6 +109,83 @@ namespace PaveMetric
 
             toolStrip1.Items.Add(new ToolStripSeparator());
             toolStrip1.Items.Add(_button_ErrorTypes);
+        }
+
+        ErrorLayerControl AddErrorLayer(ErrorType type)
+        {
+            var layer = new ErrorLayerControl(errorLayerGroup)
+            {
+                ErrorCode = type.Code,
+                LayerName = type.Name,
+                LayerColor = type.Color,
+                IsVisible = true,
+            };
+            errorLayerGroup.AddLayer(layer);
+            WireErrorLayer(layer);
+            return layer;
+        }
+
+        void WireErrorLayer(ErrorLayerControl layer)
+        {
+            layer.OnActionButtonClick += new EventHandler(ErrorLayer_OnActionButtonClick);
+            layer.OnVisibleStateChanged += new EventHandler(ErrorLayer_OnVisibleStateChanged);
+            layer.OnDeleteButtonClick += new EventHandler(ErrorLayer_OnDeleteButtonClick);
+            if (!_project.ErrorLayers.Contains(layer))
+                _project.ErrorLayers.Add(layer);
+            if (!drawingArea.ErrorLayers.Contains(layer))
+                drawingArea.ErrorLayers.Add(layer);
+        }
+
+        void SaveErrorCatalog()
+        {
+            ErrorCatalog.Save(errorLayerGroup.ErrorLayers.Select(l => l.ToErrorType()));
+        }
+
+        int CountErrorsWithCode(int code)
+        {
+            return _project.Photos.Sum(p => p.Errors.Count(e => e.ErrorCode == code));
+        }
+
+        /// <summary>Moves every recorded error of <paramref name="oldCode"/> to <paramref name="newCode"/>.</summary>
+        void RemapErrorCode(int oldCode, int newCode)
+        {
+            foreach (PavementPhoto photo in _project.Photos)
+                foreach (SurfaceError error in photo.Errors)
+                    if (error.ErrorCode == oldCode)
+                        error.ErrorCode = newCode;
+
+            if (drawingArea.ActualError != null && drawingArea.ActualError.ErrorCode == oldCode)
+                drawingArea.ActualError.ErrorCode = newCode;
+            drawingArea.RenderNeeded = true;
+        }
+
+        /// <summary>
+        /// Adds a catalog entry for every error code used by the loaded project that the
+        /// catalog does not know, so those errors stay visible and editable.
+        /// </summary>
+        void EnsureLayersForProjectCodes()
+        {
+            var known = new HashSet<int>(errorLayerGroup.ErrorLayers.Select(l => l.ErrorCode));
+            var missing = _project.Photos.SelectMany(p => p.Errors).Select(e => e.ErrorCode)
+                .Where(c => !known.Contains(c)).Distinct().OrderBy(c => c).ToList();
+            if (missing.Count == 0)
+                return;
+
+            foreach (int code in missing)
+            {
+                string name = Enum.IsDefined(typeof(ErrorCodes), code)
+                    ? ErrorCatalog.Defaults().FirstOrDefault(t => t.Code == code)?.Name ?? ((ErrorCodes)code).ToString()
+                    : $"Ismeretlen hibatípus ({code})";
+                AddErrorLayer(new ErrorType(code, name, Color.Gray));
+            }
+            SaveErrorCatalog();
+            _errorTypeToolbox.Populate();
+
+            MessageBox.Show(this,
+                "A projekt olyan hibakódokat is tartalmaz, amelyek nem szerepeltek a hibakatalógusban (" +
+                string.Join(", ", missing) + "). Ezeket felvettem a katalógusba; a nevük és színük a " +
+                "Hibatípusok ablakban módosítható.",
+                "Hibakatalógus", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         void ErrorLayer_OnDeleteButtonClick(object sender, EventArgs e)
@@ -507,6 +525,7 @@ namespace PaveMetric
                 _project.ProjectPath = Path.GetDirectoryName(dialog.FileName);
                 UpdateTitle();
                 UpdateControls();
+                EnsureLayersForProjectCodes();
             }
         }
 
@@ -604,6 +623,7 @@ namespace PaveMetric
                 //    project.ActualPhoto.PerspectiveCorrection.Length = 10.0;
                 //}
                 textBox_SectionLength.Text = _project.ActualPhoto.PerspectiveCorrection.Length.ToString("0.00");
+                UpdateDimensionWarnings();
 
 
                 if (_project.ActualPhoto.PerspectiveCorrection.ColCount == 0)
@@ -618,14 +638,13 @@ namespace PaveMetric
                 }
                 numericUpDown_Row.Value = _project.ActualPhoto.PerspectiveCorrection.RowCount;
 
-                if (drawingArea.ErrorLayers.Count == 0)
+                // a freshly loaded project starts without layer references
+                foreach (ErrorLayerControl myLayer in errorLayerGroup.ErrorLayers)
                 {
-                    foreach (ErrorLayerControl myLayer in errorLayerGroup.ErrorLayers)
-                    {
+                    if (!drawingArea.ErrorLayers.Contains(myLayer))
                         drawingArea.ErrorLayers.Add(myLayer);
-                        if (!_project.ErrorLayers.Contains(myLayer))
-                            _project.ErrorLayers.Add(myLayer);
-                    }
+                    if (!_project.ErrorLayers.Contains(myLayer))
+                        _project.ErrorLayers.Add(myLayer);
                 }
 
                 if (_project.ActualPhoto.PerspectiveCorrection.Normalized)
@@ -800,16 +819,59 @@ namespace PaveMetric
             }
         }
 
-        void Normalize()
+        /// <summary>
+        /// Checks that the section length and pavement width are set to positive values;
+        /// shows a warning and focuses the offending field otherwise.
+        /// </summary>
+        /// <summary>
+        /// Highlights the section length / pavement width fields while they are missing or invalid.
+        /// </summary>
+        void UpdateDimensionWarnings()
         {
+            const string tip = "Adja meg az értéket (m) — enélkül nem lehet normalizálni.";
+            foreach (TextBox box in new[] { textBox_SectionLength, textBox_PavementWidth })
+            {
+                bool ok = TryParseDouble(box.Text, out var value) && value > 0;
+                box.BackColor = ok ? Theme.Surface : Theme.Warning;
+                toolTip_Dimensions.SetToolTip(box, ok ? string.Empty : tip);
+            }
+        }
+
+        bool ValidateNormalizeInputs(out double length, out double width)
+        {
+            bool lengthOk = TryParseDouble(textBox_SectionLength.Text, out length) && length > 0;
+            bool widthOk = TryParseDouble(textBox_PavementWidth.Text, out width) && width > 0;
+            if (lengthOk && widthOk)
+                return true;
+
+            var missing = new List<string>();
+            if (!lengthOk) missing.Add("szakaszhossz");
+            if (!widthOk) missing.Add("burkolatszélesség");
+
+            MessageBox.Show(this,
+                "A normalizáláshoz meg kell adni a(z) " + string.Join(" és a(z) ", missing) +
+                " értékét (pozitív szám, méterben).",
+                "Hiányzó adat", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+            TextBox target = lengthOk ? textBox_PavementWidth : textBox_SectionLength;
+            target.Focus();
+            target.SelectAll();
+            return false;
+        }
+
+        bool Normalize()
+        {
+            if (_project.ActualPhoto == null)
+                return false;
+            if (!ValidateNormalizeInputs(out var length, out var width))
+                return false;
+
             Line[] lines = new Line[4];
             for (int i = 0; i < 4; i++)
             {
                 lines[i] = drawingArea.Lines[i];
             }
 
-            TryParseDouble(textBox_SectionLength.Text, out var length);
-            TryParseDouble(textBox_PavementWidth.Text, out var width);
             SnapCurveEndpointsToBoundaries(
                 drawingArea.LeftEdgeCurvePoints, drawingArea.RightEdgeCurvePoints,
                 drawingArea.Lines[1], drawingArea.Lines[0]);
@@ -847,6 +909,7 @@ namespace PaveMetric
             DrawNet();
 
             drawingArea.RenderNeeded = true;
+            return true;
         }
 
         private static List<Pos> ClonePoints(List<Pos> points)
@@ -968,6 +1031,8 @@ namespace PaveMetric
 
         private void MainForm_FormClosed(object sender, FormClosedEventArgs e)
         {
+            // palette color edits do not go through the toolbox, so persist on exit as well
+            SaveErrorCatalog();
             drawingArea.Photo = null;
             _topViewBitmap?.Dispose();
             _perspectiveBitmap?.Dispose();
@@ -1123,6 +1188,7 @@ namespace PaveMetric
 
         private void textBox_SectionLength_TextChanged(object sender, EventArgs e)
         {
+            UpdateDimensionWarnings();
             if (_project.ActualPhoto != null)
             {
                 double tempValue = _project.ActualPhoto.PerspectiveCorrection.Length;
@@ -1136,6 +1202,7 @@ namespace PaveMetric
 
         private void textBox_PavementWidth_TextChanged(object sender, EventArgs e)
         {
+            UpdateDimensionWarnings();
             if (_project.ActualPhoto != null)
             {
                 double tempValue = _project.ActualPhoto.PerspectiveCorrection.PavementWidth;

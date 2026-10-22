@@ -1,22 +1,32 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
 
 namespace PaveMetric
 {
+    /// <summary>
+    /// Floating editor for the error catalog: every row is one error type whose code, name
+    /// and color can be changed. Changes are applied to the palette layers immediately.
+    /// </summary>
     internal class ErrorTypeToolbox : Form
     {
         private readonly ErrorLayerGroup _group;
         private readonly FlowLayoutPanel _flow;
-        private readonly ComboBox _comboAdd;
+        private readonly TextBox _addCodeBox;
         private readonly TextBox _addNameBox;
         private readonly Button _btnAdd;
 
         public event Action<ErrorLayerControl> TypeAdded;
         public event Action<ErrorLayerControl> TypeRemoved;
+        /// <summary>Raised with (oldCode, newCode) after a type's code was changed.</summary>
+        public event Action<int, int> CodeChanged;
+        /// <summary>Raised after any edit, so the catalog can be persisted.</summary>
+        public event EventHandler CatalogChanged;
         public event EventHandler UserClosed;
+
+        /// <summary>Returns how many recorded errors use the given code (for delete confirmation).</summary>
+        public Func<int, int> CountUsage { get; set; }
 
         private static readonly Color[] _defaultColors =
         {
@@ -34,13 +44,24 @@ namespace PaveMetric
         {
             _group = group;
             FormBorderStyle = FormBorderStyle.SizableToolWindow;
-            Text = "Hibatípusok szerkesztése";
+            Text = "Hibakatalógus";
             ShowInTaskbar = false;
-            MinimumSize = new Size(260, 120);
-            Size = new Size(300, 340);
+            MinimumSize = new Size(280, 160);
+            Size = new Size(340, 480);
             StartPosition = FormStartPosition.Manual;
             BackColor = Theme.Surface;
             Font = Theme.BaseFont;
+
+            // ── column header ────────────────────────────────────────────
+            var header = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 22,
+                BackColor = Theme.Background,
+            };
+            header.Controls.Add(HeaderLabel("Szín", 4, 32));
+            header.Controls.Add(HeaderLabel("Kód", 34, 40));
+            header.Controls.Add(HeaderLabel("Megnevezés", 78, 120));
 
             // ── add-new row at bottom ─────────────────────────────────────
             var addPanel = new Panel
@@ -55,33 +76,33 @@ namespace PaveMetric
                 e.Graphics.DrawLine(pen, 0, 0, addPanel.Width, 0);
             };
 
-            _comboAdd = new ComboBox
+            _addCodeBox = new TextBox
             {
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Location = new Point(4, 10),
-                Size = new Size(90, 24),
-                Font = Theme.BaseFont,
-                FlatStyle = FlatStyle.Flat,
-            };
-            _comboAdd.SelectedIndexChanged += (s, e) =>
-            {
-                if (_comboAdd.SelectedItem is CodeItem item)
-                    _addNameBox.Text = item.Name;
-            };
-
-            _addNameBox = new TextBox
-            {
-                Location = new Point(98, 11),
-                Size = new Size(90, 22),
+                Location = new Point(34, 11),
+                Size = new Size(38, 22),
                 Font = Theme.BaseFont,
                 BackColor = Theme.Surface,
                 ForeColor = Theme.Text,
             };
 
+            _addNameBox = new TextBox
+            {
+                Location = new Point(78, 11),
+                Size = new Size(120, 22),
+                Font = Theme.BaseFont,
+                BackColor = Theme.Surface,
+                ForeColor = Theme.Text,
+                PlaceholderText = "Új hibatípus neve",
+            };
+            _addNameBox.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == Keys.Enter) { BtnAdd_Click(s, e); e.SuppressKeyPress = true; }
+            };
+
             _btnAdd = new Button
             {
                 Text = "Hozzáad",
-                Location = new Point(196, 9),
+                Location = new Point(206, 9),
                 Size = new Size(72, 26),
                 FlatStyle = FlatStyle.Flat,
                 Font = Theme.BaseFont,
@@ -93,7 +114,7 @@ namespace PaveMetric
             _btnAdd.FlatAppearance.BorderColor = Theme.Accent;
             _btnAdd.Click += BtnAdd_Click;
 
-            addPanel.Controls.Add(_comboAdd);
+            addPanel.Controls.Add(_addCodeBox);
             addPanel.Controls.Add(_addNameBox);
             addPanel.Controls.Add(_btnAdd);
             addPanel.Resize += (s, e) =>
@@ -114,21 +135,34 @@ namespace PaveMetric
             };
 
             Controls.Add(_flow);
+            Controls.Add(header);
             Controls.Add(addPanel);
 
             Populate();
         }
 
+        private static Label HeaderLabel(string text, int x, int width) => new Label
+        {
+            Text = text,
+            Location = new Point(x, 0),
+            Size = new Size(width, 22),
+            TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font(Theme.BaseFont.FontFamily, 7.5f),
+            ForeColor = Theme.TextMuted,
+        };
+
         public void Populate()
         {
+            _flow.SuspendLayout();
             _flow.Controls.Clear();
             foreach (ErrorLayerControl layer in _group.ErrorLayers)
-                _flow.Controls.Add(new TypeConfigRow(layer, OnDeleteRow));
+                _flow.Controls.Add(new TypeConfigRow(this, layer));
+            _flow.ResumeLayout();
 
             _flow.SizeChanged -= OnFlowSizeChanged;
             _flow.SizeChanged += OnFlowSizeChanged;
             ResizeRows();
-            RefreshCombo();
+            _addCodeBox.Text = NextFreeCode().ToString();
         }
 
         private void OnFlowSizeChanged(object s, EventArgs e) => ResizeRows();
@@ -140,51 +174,79 @@ namespace PaveMetric
                 c.Width = w;
         }
 
-        private void RefreshCombo()
-        {
-            _comboAdd.Items.Clear();
-            var used = new HashSet<ErrorCodes>(_group.ErrorLayers.Select(l => l.ErrorCode));
-            foreach (ErrorCodes code in Enum.GetValues(typeof(ErrorCodes)))
-                if (!used.Contains(code))
-                    _comboAdd.Items.Add(new CodeItem(code, DefaultName(code)));
+        private int NextFreeCode() =>
+            _group.ErrorLayers.Count == 0 ? 10 : _group.ErrorLayers.Max(l => l.ErrorCode) + 1;
 
-            bool any = _comboAdd.Items.Count > 0;
-            _btnAdd.Enabled = any;
-            if (any)
+        private ErrorLayerControl FindByCode(int code, ErrorLayerControl except) =>
+            _group.ErrorLayers.FirstOrDefault(l => l != except && l.ErrorCode == code);
+
+        /// <summary>Parses and validates a code typed by the user; shows a warning when invalid.</summary>
+        private bool TryGetCode(string text, ErrorLayerControl except, out int code)
+        {
+            if (!int.TryParse(text.Trim(), out code) || code <= 0)
             {
-                _comboAdd.SelectedIndex = 0;
-                _addNameBox.Text = ((CodeItem)_comboAdd.Items[0]).Name;
+                Warn("A hibakód pozitív egész szám legyen.");
+                return false;
             }
-            else
+            var other = FindByCode(code, except);
+            if (other != null)
             {
-                _addNameBox.Text = "";
+                Warn($"A(z) {code} kód már foglalt: „{other.LayerName}”.");
+                return false;
             }
-            _addNameBox.Enabled = any;
+            return true;
         }
+
+        private void Warn(string message) =>
+            MessageBox.Show(this, message, "Hibakatalógus", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
         private void BtnAdd_Click(object s, EventArgs e)
         {
-            if (_comboAdd.SelectedItem is not CodeItem item) return;
             string name = _addNameBox.Text.Trim();
-            if (name.Length == 0) name = item.Name;
+            if (name.Length == 0)
+            {
+                Warn("Adja meg az új hibatípus nevét.");
+                _addNameBox.Focus();
+                return;
+            }
+            if (!TryGetCode(_addCodeBox.Text, null, out int code))
+            {
+                _addCodeBox.Focus();
+                return;
+            }
+
             var newLayer = new ErrorLayerControl(_group)
             {
-                ErrorCode = item.Code,
+                ErrorCode = code,
                 LayerName = name,
-                LayerColor = DefaultColor(item.Code),
+                LayerColor = _defaultColors[_group.ErrorLayers.Count % _defaultColors.Length],
                 IsVisible = true,
             };
             _group.AddLayer(newLayer);
             TypeAdded?.Invoke(newLayer);
+            _addNameBox.Text = "";
             Populate();
+            OnCatalogChanged();
         }
 
-        private void OnDeleteRow(ErrorLayerControl layer)
+        private void DeleteType(ErrorLayerControl layer)
         {
+            int used = CountUsage?.Invoke(layer.ErrorCode) ?? 0;
+            string message = used > 0
+                ? $"A(z) „{layer.LayerName}” típushoz {used} rögzített hiba tartozik.\n" +
+                  "A hibák megmaradnak a projektben, de típus nélkül nem jelennek meg.\n\nBiztosan törli?"
+                : $"Törli a(z) „{layer.LayerName}” hibatípust?";
+            if (MessageBox.Show(this, message, "Hibatípus törlése", MessageBoxButtons.YesNo,
+                    used > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+
             TypeRemoved?.Invoke(layer);
             _group.RemoveLayer(layer);
             Populate();
+            OnCatalogChanged();
         }
+
+        private void OnCatalogChanged() => CatalogChanged?.Invoke(this, EventArgs.Empty);
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
@@ -197,36 +259,12 @@ namespace PaveMetric
             base.OnFormClosing(e);
         }
 
-        private static string DefaultName(ErrorCodes code) => code switch
-        {
-            ErrorCodes.MapCrack => "Hálós repedés",
-            ErrorCodes.AlligatorCrack => "Hálós repedés deformációval",
-            ErrorCodes.LongitudinalCrack => "Hosszirányú repedés",
-            ErrorCodes.CrossCrack => "Keresztirányú repedés",
-            ErrorCodes.Pothole => "Kátyú",
-            ErrorCodes.FilledPothole => "Kitöltött kátyú",
-            ErrorCodes.SurfacePeelOff => "Felületi hámlás",
-            ErrorCodes.SurfacePerspiration => "Izzadás",
-            _ => code.ToString()
-        };
-
-        private static Color DefaultColor(ErrorCodes code) =>
-            _defaultColors[(int)code % _defaultColors.Length];
-
-        private sealed class CodeItem
-        {
-            public readonly ErrorCodes Code;
-            public readonly string Name;
-            public CodeItem(ErrorCodes code, string name) { Code = code; Name = name; }
-            public override string ToString() => $"{(int)Code}";
-        }
-
         // ── per-type config row ──────────────────────────────────────────
         private sealed class TypeConfigRow : Panel
         {
             private const int RowH = 32;
 
-            public TypeConfigRow(ErrorLayerControl layer, Action<ErrorLayerControl> onDelete)
+            public TypeConfigRow(ErrorTypeToolbox owner, ErrorLayerControl layer)
             {
                 Height = RowH;
                 Margin = new Padding(0);
@@ -251,18 +289,40 @@ namespace PaveMetric
                     {
                         layer.LayerColor = dlg.Color;
                         colorBtn.BackColor = dlg.Color;
+                        owner.OnCatalogChanged();
                     }
                 };
 
-                // numeric code label
-                var codeLabel = new Label
+                // editable numeric code; committed on Enter or when focus leaves
+                var codeBox = new TextBox
                 {
-                    Text = ((int)layer.ErrorCode).ToString(),
-                    Location = new Point(32, 0),
-                    Size = new Size(22, RowH),
-                    TextAlign = ContentAlignment.MiddleLeft,
-                    Font = new Font(Theme.BaseFont.FontFamily, 7.5f),
-                    ForeColor = Theme.TextMuted,
+                    Text = layer.ErrorCode.ToString(),
+                    Location = new Point(34, 7),
+                    Size = new Size(38, 18),
+                    BorderStyle = BorderStyle.FixedSingle,
+                    BackColor = Theme.Surface,
+                    ForeColor = Theme.Text,
+                    Font = Theme.BaseFont,
+                };
+                void CommitCode()
+                {
+                    int oldCode = layer.ErrorCode;
+                    if (codeBox.Text.Trim() == oldCode.ToString())
+                        return;
+                    if (!owner.TryGetCode(codeBox.Text, layer, out int newCode))
+                    {
+                        codeBox.Text = oldCode.ToString();
+                        return;
+                    }
+                    layer.ErrorCode = newCode;
+                    codeBox.Text = newCode.ToString();
+                    owner.CodeChanged?.Invoke(oldCode, newCode);
+                    owner.OnCatalogChanged();
+                }
+                codeBox.Leave += (s, e) => CommitCode();
+                codeBox.KeyDown += (s, e) =>
+                {
+                    if (e.KeyCode == Keys.Enter) { CommitCode(); e.SuppressKeyPress = true; }
                 };
 
                 // delete button (right-anchored)
@@ -279,30 +339,31 @@ namespace PaveMetric
                 };
                 deleteBtn.FlatAppearance.BorderSize = 0;
                 deleteBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(255, 230, 230);
-                deleteBtn.Click += (s, e) => onDelete(layer);
+                deleteBtn.Click += (s, e) => owner.DeleteType(layer);
 
-                // name text box (fills between code label and delete button)
+                // name text box (fills between code box and delete button)
                 var nameBox = new TextBox
                 {
                     Text = layer.LayerName,
-                    Location = new Point(57, 7),
+                    Location = new Point(78, 7),
                     Height = 18,
-                    BorderStyle = BorderStyle.None,
+                    BorderStyle = BorderStyle.FixedSingle,
                     BackColor = Theme.Surface,
                     ForeColor = Theme.Text,
                     Font = Theme.BaseFont,
                 };
                 nameBox.TextChanged += (s, e) => layer.LayerName = nameBox.Text;
+                nameBox.Leave += (s, e) => owner.OnCatalogChanged();
 
                 Controls.Add(colorBtn);
-                Controls.Add(codeLabel);
+                Controls.Add(codeBox);
                 Controls.Add(nameBox);
                 Controls.Add(deleteBtn);
 
                 // adjust nameBox width whenever the row resizes
                 Resize += (s, e) =>
                 {
-                    nameBox.Width = deleteBtn.Left - nameBox.Left - 4;
+                    nameBox.Width = Math.Max(40, deleteBtn.Left - nameBox.Left - 4);
                 };
 
                 // bottom separator line

@@ -74,7 +74,7 @@ namespace PaveMetric
             {
                 _project.ErrorLayers.Remove(layer);
                 drawingArea.ErrorLayers.Remove(layer);
-                if (drawingArea.ActualError.ErrorCode == layer.ErrorCode)
+                if (drawingArea.ActualError?.ErrorCode == layer.ErrorCode)
                     drawingArea.Command = 0;
                 drawingArea.RenderNeeded = true;
             };
@@ -156,6 +156,10 @@ namespace PaveMetric
 
             if (drawingArea.ActualError != null && drawingArea.ActualError.ErrorCode == oldCode)
                 drawingArea.ActualError.ErrorCode = newCode;
+
+            // undo/redo entries may hold errors that are not on any photo right now and so
+            // still carry the old code; replaying them would resurrect orphaned errors
+            ClearEditHistory();
             drawingArea.RenderNeeded = true;
         }
 
@@ -820,10 +824,6 @@ namespace PaveMetric
         }
 
         /// <summary>
-        /// Checks that the section length and pavement width are set to positive values;
-        /// shows a warning and focuses the offending field otherwise.
-        /// </summary>
-        /// <summary>
         /// Highlights the section length / pavement width fields while they are missing or invalid.
         /// </summary>
         void UpdateDimensionWarnings()
@@ -837,6 +837,10 @@ namespace PaveMetric
             }
         }
 
+        /// <summary>
+        /// Checks that the section length and pavement width are set to positive values;
+        /// shows a warning and focuses the offending field otherwise.
+        /// </summary>
         bool ValidateNormalizeInputs(out double length, out double width)
         {
             bool lengthOk = TryParseDouble(textBox_SectionLength.Text, out length) && length > 0;
@@ -1263,8 +1267,32 @@ namespace PaveMetric
             }
         }
 
+        /// <summary>
+        /// Warns when some photos have no section length / pavement width; their rows are
+        /// exported as zero. Returns false if the user cancels the export.
+        /// </summary>
+        bool ConfirmExportWithMissingDimensions()
+        {
+            var photos = _project.PhotosWithoutDimensions();
+            if (photos.Count == 0)
+                return true;
+
+            var list = string.Join(", ", photos.Take(10).Select(p => p.Section.ToString("0.00")));
+            if (photos.Count > 10)
+                list += $" … (összesen {photos.Count})";
+
+            return MessageBox.Show(this,
+                "Az alábbi szelvényeknél nincs megadva a szakaszhossz vagy a burkolatszélesség, " +
+                "ezért a hibáik nem számíthatók (0 értékkel kerülnek az exportba):\n\n" + list +
+                "\n\nFolytatja az exportot?",
+                "Hiányzó adat", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes;
+        }
+
         private void button_ErrorExport_Click(object sender, EventArgs e)
         {
+            if (!ConfirmExportWithMissingDimensions())
+                return;
+
             SaveFileDialog dialog = new SaveFileDialog();
             dialog.Title = "Hibák exportálása szövegfájlba";
             dialog.Filter = "Szövegfájlok | *.txt";
@@ -1351,6 +1379,8 @@ namespace PaveMetric
 
         private void toolStripButton1_Click(object sender, EventArgs e)
         {
+            if (!ConfirmExportWithMissingDimensions())
+                return;
             _project.ExportTechnology("techno.txt");
         }
 

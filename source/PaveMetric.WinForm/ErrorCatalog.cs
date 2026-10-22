@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace PaveMetric
 {
@@ -23,6 +24,7 @@ namespace PaveMetric
             ColorArgb = color.ToArgb();
         }
 
+        [JsonIgnore]
         public Color Color => Color.FromArgb(ColorArgb);
     }
 
@@ -55,21 +57,41 @@ namespace PaveMetric
             new ErrorType((int)ErrorCodes.SurfacePerspiration, "Izzadás",                   Color.Green),
         };
 
-        /// <summary>Loads the saved catalog, falling back to the defaults if it is missing or unreadable.</summary>
+        /// <summary>
+        /// Loads the saved catalog, falling back to the defaults if it is missing or unreadable.
+        /// An unreadable file is kept as <c>.bak</c> so the next save does not destroy it.
+        /// </summary>
         public static List<ErrorType> Load()
         {
+            if (!File.Exists(FilePath))
+                return Defaults();
+
             try
             {
-                if (File.Exists(FilePath))
+                var list = JsonSerializer.Deserialize<List<ErrorType>>(File.ReadAllText(FilePath));
+                var valid = list?
+                    .Where(t => t != null && t.Code > 0)
+                    .GroupBy(t => t.Code).Select(g => g.First())
+                    .ToList();
+                if (valid != null && valid.Count > 0)
                 {
-                    var list = JsonSerializer.Deserialize<List<ErrorType>>(File.ReadAllText(FilePath));
-                    if (list != null && list.Count > 0)
-                        return list.GroupBy(t => t.Code).Select(g => g.First()).ToList();
+                    foreach (var type in valid.Where(t => string.IsNullOrWhiteSpace(t.Name)))
+                        type.Name = $"Hibatípus ({type.Code})";
+                    return valid;
                 }
             }
             catch (Exception)
             {
-                // corrupt file: start over from the defaults
+                // fall through to the backup below
+            }
+
+            try
+            {
+                File.Copy(FilePath, FilePath + ".bak", true);
+            }
+            catch (Exception)
+            {
+                // best effort only
             }
             return Defaults();
         }

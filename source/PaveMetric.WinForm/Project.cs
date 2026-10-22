@@ -298,6 +298,29 @@ namespace PaveMetric
             return values;
         }
 
+        /// <summary>Photos whose section length or pavement width is not set (area would be zero).</summary>
+        public List<PavementPhoto> PhotosWithoutDimensions() =>
+            _photos.Where(p => !HasDimensions(p)).ToList();
+
+        static bool HasDimensions(PavementPhoto photo) =>
+            photo.PerspectiveCorrection.PavementWidth > 0 && photo.PerspectiveCorrection.Length > 0;
+
+        /// <summary>
+        /// Pavement area of the photo, with the width averaged with the previous photo's when
+        /// that one is usable. Returns 0 when the photo itself has no dimensions.
+        /// </summary>
+        double CorrectedPavementArea(int index)
+        {
+            var photo = _photos[index];
+            if (!HasDimensions(photo))
+                return 0.0;
+
+            var width = photo.PerspectiveCorrection.PavementWidth;
+            if (index > 0 && HasDimensions(_photos[index - 1]))
+                width = 0.5 * (width + _photos[index - 1].PerspectiveCorrection.PavementWidth);
+            return width * photo.PerspectiveCorrection.Length;
+        }
+
         public void ExportErrors(string fileName)
         {
             var index = 0;
@@ -319,18 +342,12 @@ namespace PaveMetric
             foreach (var myPhoto in _photos)
             {
                 var pavementArea = myPhoto.PerspectiveCorrection.PavementWidth * myPhoto.PerspectiveCorrection.Length;
-                var correctedPavementArea = pavementArea;
-
-                if (index > 0)
-                {
-                    var width1 = _photos[index - 1].PerspectiveCorrection.PavementWidth;
-                    var width2 = myPhoto.PerspectiveCorrection.PavementWidth;
-                    correctedPavementArea = 0.5 * (width1 + width2) * myPhoto.PerspectiveCorrection.Length;
-                }
+                var correctedPavementArea = CorrectedPavementArea(index);
 
                 var errorAreaList = new Dictionary<int, double>();
 
-                foreach (var myError in myPhoto.Errors)
+                // without dimensions the error ratio is undefined: leave the row at zero
+                foreach (var myError in HasDimensions(myPhoto) ? myPhoto.Errors : new List<SurfaceError>())
                 {
                     var errorCode = myError.ErrorCode;
                     var errorArea = (myError.Right - myError.Left) * (myError.EndSection - myError.StartSection);
@@ -357,18 +374,12 @@ namespace PaveMetric
             for (int i = 0; i < _photos.Count; i++)
             {
                 var pavementArea = _photos[i].PerspectiveCorrection.PavementWidth * _photos[i].PerspectiveCorrection.Length;
-                var correctedPavementArea = pavementArea;
-
-                if (i > 0)
-                {
-                    var width0 = _photos[i + 0].PerspectiveCorrection.PavementWidth;
-                    var width1 = _photos[i - 1].PerspectiveCorrection.PavementWidth;
-                    correctedPavementArea = 0.5 * (width0 + width1) * _photos[i].PerspectiveCorrection.Length;
-                }
+                var correctedPavementArea = CorrectedPavementArea(i);
 
                 var errorAreaPercentList = new Dictionary<int, double>();
 
-                foreach (var error in _photos[i].Errors)
+                // without dimensions the error ratio is undefined: no technology is proposed
+                foreach (var error in HasDimensions(_photos[i]) ? _photos[i].Errors : new List<SurfaceError>())
                 {
                     var errorCode = error.ErrorCode;
                     var errorArea = (error.Right - error.Left) * (error.EndSection - error.StartSection);

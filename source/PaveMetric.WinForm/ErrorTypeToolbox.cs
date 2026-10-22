@@ -293,7 +293,8 @@ namespace PaveMetric
                     }
                 };
 
-                // editable numeric code; committed on Enter or when focus leaves
+                // editable numeric code; committed on Enter or on validation when focus leaves
+                // (Validating, not Leave: a message box shown from Leave swallows the click)
                 var codeBox = new TextBox
                 {
                     Text = layer.ErrorCode.ToString(),
@@ -319,7 +320,7 @@ namespace PaveMetric
                     owner.CodeChanged?.Invoke(oldCode, newCode);
                     owner.OnCatalogChanged();
                 }
-                codeBox.Leave += (s, e) => CommitCode();
+                codeBox.Validating += (s, e) => CommitCode();
                 codeBox.KeyDown += (s, e) =>
                 {
                     if (e.KeyCode == Keys.Enter) { CommitCode(); e.SuppressKeyPress = true; }
@@ -352,8 +353,18 @@ namespace PaveMetric
                     ForeColor = Theme.Text,
                     Font = Theme.BaseFont,
                 };
-                nameBox.TextChanged += (s, e) => layer.LayerName = nameBox.Text;
-                nameBox.Leave += (s, e) => owner.OnCatalogChanged();
+                nameBox.TextChanged += (s, e) =>
+                {
+                    // never let the palette show an empty label while typing
+                    if (nameBox.Text.Trim().Length > 0)
+                        layer.LayerName = nameBox.Text.Trim();
+                };
+                nameBox.Validating += (s, e) =>
+                {
+                    // an emptied name falls back to the last non-empty one
+                    nameBox.Text = layer.LayerName;
+                    owner.OnCatalogChanged();
+                };
 
                 Controls.Add(colorBtn);
                 Controls.Add(codeBox);

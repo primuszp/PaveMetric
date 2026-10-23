@@ -96,7 +96,7 @@ namespace PaveMetric
             {
                 DisplayStyle = ToolStripItemDisplayStyle.Text,
                 AutoToolTip = false,
-                ToolTipText = "Hibatípusok szerkesztése (név, szín, kód)",
+                ToolTipText = "Projekt hibatípusainak kiválasztása és a hibakatalógus szerkesztése",
                 CheckOnClick = true,
             };
             _button_ErrorTypes.CheckedChanged += (s, e) =>
@@ -105,8 +105,24 @@ namespace PaveMetric
                 {
                     _errorTypeToolbox.Populate();
                     if (!_errorTypeToolbox.Visible)
-                        _errorTypeToolbox.Location = new Point(Right + 4, Top + 80);
+                    {
+                        // Keep the entire toolbox on the owner's monitor, even when
+                        // the main window is maximized or close to a screen edge.
+                        Rectangle workingArea = Screen.FromControl(this).WorkingArea;
+                        _errorTypeToolbox.Size = new Size(
+                            Math.Min(_errorTypeToolbox.Width, workingArea.Width),
+                            Math.Min(_errorTypeToolbox.Height, workingArea.Height));
+                        int x = Right + 4;
+                        if (x + _errorTypeToolbox.Width > workingArea.Right)
+                            x = Right - _errorTypeToolbox.Width;
+                        _errorTypeToolbox.Location = new Point(
+                            Math.Clamp(x, workingArea.Left,
+                                Math.Max(workingArea.Left, workingArea.Right - _errorTypeToolbox.Width)),
+                            Math.Clamp(Top + 80, workingArea.Top,
+                                Math.Max(workingArea.Top, workingArea.Bottom - _errorTypeToolbox.Height)));
+                    }
                     _errorTypeToolbox.Show(this);
+                    _errorTypeToolbox.Activate();
                 }
                 else
                 {
@@ -307,23 +323,20 @@ namespace PaveMetric
             {
                 if (_project.ActualPhoto != null)
                 {
-                    double pavementWidth_2 = _project.ActualPhoto.PerspectiveCorrection.PavementWidth / 2.0;
                     double startSection = _project.ActualPhoto.Section;
-                    Pos realPos = drawingArea.ViewToRealPosition(new Pos(e.MouseX, e.MouseY));
-                    realPos.X -= pavementWidth_2;
-                    realPos.Y += startSection;
                     SurfaceError deletedError = null;
                     foreach (SurfaceError myError in _project.ActualPhoto.Errors)
                     {
                         if (myError.ErrorCode == drawingArea.ActualError.ErrorCode)
                         {
-                            if (realPos.X > myError.Left && realPos.X < myError.Right)
+                            Pos imagePoint = drawingArea.TopViewEnabled
+                                ? _project.ActualPhoto.PerspectiveCorrection.GetScreenPosition(
+                                    drawingArea.ViewToRealPosition(new Pos(e.MouseX, e.MouseY)))
+                                : new Pos(e.MouseX, e.MouseY);
+                            if (myError.Contains(_project.ActualPhoto.PerspectiveCorrection, startSection, imagePoint))
                             {
-                                if (realPos.Y > myError.StartSection && realPos.Y < myError.EndSection)
-                                {
-                                    deletedError = myError;
-                                    break;
-                                }
+                                deletedError = myError;
+                                break;
                             }
                         }
                     }
@@ -381,14 +394,15 @@ namespace PaveMetric
         /// </summary>
         private void MarkPerspectiveDirty()
         {
+            // Restore photo-coordinate boundary lines before invalidating the model.
+            if (drawingArea.TopViewEnabled)
+                SetTopView(false);
+
             if (_project.ActualPhoto != null)
                 _project.ActualPhoto.PerspectiveCorrection.Normalized = false;
 
             if (drawingArea.Lines.Count > 4)
                 drawingArea.Lines.RemoveRange(4, drawingArea.Lines.Count - 4);
-
-            if (drawingArea.TopViewEnabled)
-                SetTopView(false);
 
             DisposeTopViewBitmap();
             button_ToggleView.Enabled = false;
@@ -693,6 +707,7 @@ namespace PaveMetric
                     button_ToggleView.Enabled = true;
                     button_Normalize.Checked = true;
                     button_Normalize.BackColor = Theme.Surface;
+                    UpdateRoadModelWarning();
                 }
                 else
                 {
@@ -823,6 +838,19 @@ namespace PaveMetric
 
         private void button_Measure_Click(object sender, EventArgs e)
         {
+            if (_project.ActualPhoto?.PerspectiveCorrection.Normalized != true)
+            {
+                MessageBox.Show(this, "A szélesség beállítása előtt normalizálja a képet.",
+                    "Mérés", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (!TryParseDouble(textBox_MeasureBase.Text, out double baseLength)
+                || !double.IsFinite(baseLength) || baseLength <= 0)
+            {
+                MessageBox.Show(this, "Adja meg a keresztirányú bázis pozitív hosszát milliméterben.",
+                    "Mérés", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             drawingArea.Command = 5;
             drawingArea.MeasureAction = CalcMeasureLength;
         }
@@ -840,23 +868,38 @@ namespace PaveMetric
                 out value);
         }
 
-        void CalcMeasureLength(double measureLength)
+        void CalcMeasureLength(Pos start, Pos end)
         {
-            TryParseDouble(textBox_MeasureBase.Text, out var baseLength);
-            double scale = baseLength / measureLength;
-
-            if (scale > 0)
+            var correction = _project.ActualPhoto?.PerspectiveCorrection;
+            if (correction == null)
+                return;
+            Pos realStart = drawingArea.ViewToRealPosition(start);
+            Pos realEnd = drawingArea.ViewToRealPosition(end);
+            bool IsInsideMappedSection(Pos view, Pos real)
             {
-                if (_project.ActualPhoto.PerspectiveCorrection.Normalized)
-                {
-                    double x0 = _project.ActualPhoto.PerspectiveCorrection.LeftEdge.P1.X;
-                    double x1 = _project.ActualPhoto.PerspectiveCorrection.RightEdge.P1.X;
-                    double pw = Math.Round(Math.Abs(x1 - x0) * scale / 1000d, 2);
-
-                    textBox_PavementWidth.Text = string.Format("{0:N2}", pw);         
-                    Normalize();
-                }
+                // Curved inverse mapping clamps longitudinal station at the boundaries.
+                // Reject points outside them rather than calibrating from clamped values.
+                Pos projected = drawingArea.RealToViewPosition(real);
+                return Math.Abs(projected.X - view.X) <= 1.0
+                    && Math.Abs(projected.Y - view.Y) <= 1.0;
             }
+            if (!TryParseDouble(textBox_MeasureBase.Text, out double baseLength)
+                || !IsInsideMappedSection(start, realStart) || !IsInsideMappedSection(end, realEnd)
+                || !correction.TryCalibrateWidthFromImageReference(
+                    drawingArea.TopViewEnabled ? correction.GetScreenPosition(realStart) : start,
+                    drawingArea.TopViewEnabled ? correction.GetScreenPosition(realEnd) : end,
+                    baseLength / 1000.0, out double width)
+                || Math.Round(width, 2) <= 0.0)
+            {
+                MessageBox.Show(this,
+                    "A burkolaton belül, ugyanabban a keresztmetszetben jelölje ki a bázis két különböző pontját. " +
+                    "A bázishossz pozitív szám legyen (mm).",
+                    "Mérés", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            textBox_PavementWidth.Text = Math.Round(width, 2).ToString("0.00", CultureInfo.CurrentCulture);
+            Normalize();
         }
 
         /// <summary>
@@ -905,6 +948,9 @@ namespace PaveMetric
                 return false;
             if (!ValidateNormalizeInputs(out var length, out var width))
                 return false;
+            Action restoreBefore = CaptureNormalizationState();
+            var previous = _project.ActualPhoto.PerspectiveCorrection;
+            var replacement = new PerspectiveCorrection { RowCount = previous.RowCount, ColCount = previous.ColCount };
 
             Line[] lines = new Line[4];
             for (int i = 0; i < 4; i++)
@@ -916,12 +962,9 @@ namespace PaveMetric
                 drawingArea.LeftEdgeCurvePoints, drawingArea.RightEdgeCurvePoints,
                 drawingArea.Lines[1], drawingArea.Lines[0]);
 
-            _project.ActualPhoto.PerspectiveCorrection.Length = length;
-            _project.ActualPhoto.PerspectiveCorrection.PavementWidth = width;
-
             if (HasCurvedEdges())
             {
-                _project.ActualPhoto.PerspectiveCorrection.NormalizeCurved(
+                replacement.NormalizeCurved(
                     drawingArea.LeftEdgeCurvePoints,
                     drawingArea.RightEdgeCurvePoints,
                     length,
@@ -941,15 +984,78 @@ namespace PaveMetric
                     lines[3].P1 = new Pos(drawingArea.RightEdgeCurvePoints[1].X, drawingArea.RightEdgeCurvePoints[1].Y);
                 }
 
-                _project.ActualPhoto.PerspectiveCorrection.Normalize(lines, length, width);
+                replacement.Normalize(lines, length, width);
+            }
+            if (!_project.ActualPhoto.TryReplaceCorrection(replacement, out string reason))
+            {
+                restoreBefore();
+                MessageBox.Show(this, reason, "Normalizálás", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
             }
             DisposeTopViewBitmap();
 
             ClearPerspectiveDirty();
+            UpdateRoadModelWarning();
             DrawNet();
 
             drawingArea.RenderNeeded = true;
+            RecordOperation(restoreBefore, CaptureNormalizationState());
             return true;
+        }
+
+        private Action CaptureNormalizationState()
+        {
+            PavementPhoto photo = _project.ActualPhoto;
+            PerspectiveCorrection correction = photo.PerspectiveCorrection;
+            bool normalized = correction.Normalized;
+            var errors = photo.Errors.Select(error => (Error: error, Bounds: error.Clone())).ToArray();
+            var left = ClonePoints(drawingArea.LeftEdgeCurvePoints);
+            var right = ClonePoints(drawingArea.RightEdgeCurvePoints);
+            Line CopyLine(Line line) => CreateLine(new Pos(line.P0.X, line.P0.Y),
+                new Pos(line.P1.X, line.P1.Y), line.LineColor, line.LineWidth);
+            var lines = drawingArea.Lines.Select(CopyLine).ToArray();
+            string lengthText = textBox_SectionLength.Text, widthText = textBox_PavementWidth.Text;
+            Color buttonColor = button_Normalize.BackColor;
+            string tooltip = button_Normalize.ToolTipText;
+            return () =>
+            {
+                if (drawingArea.TopViewEnabled) SetTopView(false);
+                DisposeTopViewBitmap();
+                photo.PerspectiveCorrection = correction;
+                correction.Normalized = normalized;
+                foreach (var item in errors) item.Error.CopyBoundsFrom(item.Bounds);
+                RestorePoints(drawingArea.LeftEdgeCurvePoints, left);
+                RestorePoints(drawingArea.RightEdgeCurvePoints, right);
+                drawingArea.Lines.Clear();
+                drawingArea.Lines.AddRange(lines.Select(CopyLine));
+                textBox_SectionLength.Text = lengthText;
+                textBox_PavementWidth.Text = widthText;
+                button_Normalize.Checked = correction.Normalized;
+                button_Normalize.BackColor = buttonColor;
+                button_Normalize.ToolTipText = tooltip;
+                button_ToggleView.Enabled = correction.Normalized;
+                drawingArea.ClearErrorSelection();
+                drawingArea.RenderNeeded = true;
+            };
+        }
+
+        private void UpdateRoadModelWarning()
+        {
+            button_Normalize.ToolTipText = string.Empty;
+            var correction = _project.ActualPhoto?.PerspectiveCorrection;
+            if (correction?.Normalized != true || !HasCurvedEdges()) return;
+            if (correction.RoadModelVersion == 0)
+            {
+                button_Normalize.BackColor = Theme.Warning;
+                button_Normalize.ToolTipText = "A fénykép a korábbi görbemodellt használja. " +
+                    "Az újranormalizálás a rögzített hibákat is automatikusan átvetíti.";
+            }
+            else if (!correction.UsesMetricRoadPlane)
+            {
+                button_Normalize.BackColor = Theme.Warning;
+                button_Normalize.ToolTipText = "A szélekre nem illeszthető megbízható, állandó szélességű síkbeli modell. " +
+                    "A hossz és a terület csak közelítő; ellenőrizze a széleket és a megadott méreteket.";
+            }
         }
 
         private static List<Pos> ClonePoints(List<Pos> points)
@@ -1017,6 +1123,17 @@ namespace PaveMetric
 
         private void button_Normalize_Click(object sender, EventArgs e)
         {
+            if (_project.ActualPhoto?.PerspectiveCorrection.Normalized == true)
+            {
+                if (drawingArea.TopViewEnabled) SetTopView(false);
+                Action restoreBefore = CaptureNormalizationState();
+                drawingArea.Command = 0;
+                drawingArea.ClearErrorSelection();
+                MarkPerspectiveDirty();
+                button_Normalize.ToolTipText = "Szerkessze a közeli és távoli határt, valamint a burkolatszéleket, majd normalizáljon újra.";
+                RecordOperation(restoreBefore, CaptureNormalizationState());
+                return;
+            }
             Normalize();
             button_ToggleView.Enabled = _project.ActualPhoto?.PerspectiveCorrection.Normalized == true;
         }
@@ -1047,10 +1164,7 @@ namespace PaveMetric
 
             drawingArea.TopViewEnabled = enabled;
             drawingArea.Photo = enabled ? _topViewBitmap : _perspectiveBitmap;
-            if (enabled)
-                drawingArea.FitImageToView();
-            else
-                drawingArea.ResetView();
+            drawingArea.FitImageToView();
             button_ToggleView.Checked = enabled;
             button_ToggleView.Text = enabled ? "Perspektíva" : "Felülnézet";
 
@@ -1058,7 +1172,8 @@ namespace PaveMetric
             button_NearDistance.Enabled = !enabled;
             button_LeftEdge.Enabled = !enabled;
             button_RightEdge.Enabled = !enabled;
-            button_Normalize.Enabled = !enabled;
+            // Normalization can also be switched off directly from the top view.
+            button_Normalize.Enabled = true;
             button_Measure.Enabled = !enabled;
 
             if (enabled)
@@ -1228,30 +1343,46 @@ namespace PaveMetric
 
         private void textBox_SectionLength_TextChanged(object sender, EventArgs e)
         {
-            UpdateDimensionWarnings();
-            if (_project.ActualPhoto != null)
-            {
-                double tempValue = _project.ActualPhoto.PerspectiveCorrection.Length;
-                if (MainForm.TryParseDouble(textBox_SectionLength.Text, out tempValue))
-                {
-                    _project.ActualPhoto.PerspectiveCorrection.Length = tempValue;
-                    UpdateNet();
-                }
-            }
+            ApplyDimensionText(textBox_SectionLength, c => c.Length, (c, v) => c.Length = v);
         }
 
         private void textBox_PavementWidth_TextChanged(object sender, EventArgs e)
         {
+            ApplyDimensionText(textBox_PavementWidth, c => c.PavementWidth, (c, v) => c.PavementWidth = v);
+        }
+
+        /// <summary>
+        /// Takes a typed section length / pavement width. While the photo has recorded errors,
+        /// the current geometry is what locates them on the photo, so it must not change under
+        /// them: the photo is only marked for re-normalization, and <see cref="Normalize"/>
+        /// applies the new value and reprojects the errors.
+        /// </summary>
+        private void ApplyDimensionText(TextBox box, Func<PerspectiveCorrection, double> get,
+            Action<PerspectiveCorrection, double> set)
+        {
             UpdateDimensionWarnings();
-            if (_project.ActualPhoto != null)
+            PavementPhoto photo = _project.ActualPhoto;
+            if (photo == null || !TryParseDouble(box.Text, out double value))
+                return;
+
+            PerspectiveCorrection correction = photo.PerspectiveCorrection;
+            // the box shows two decimals; that rounding is not a change
+            if (Math.Abs(get(correction) - value) < 0.005)
+                return;
+
+            if (photo.Errors.Count > 0 && correction.HasUsableCoordinates)
             {
-                double tempValue = _project.ActualPhoto.PerspectiveCorrection.PavementWidth;
-                if (MainForm.TryParseDouble(textBox_PavementWidth.Text, out tempValue))
+                if (correction.Normalized)
                 {
-                    _project.ActualPhoto.PerspectiveCorrection.PavementWidth = tempValue;
-                    UpdateNet();
+                    MarkPerspectiveDirty();
+                    button_Normalize.ToolTipText = "A méretek módosultak — normalizáljon újra; " +
+                        "a rögzített hibák az új rendszerbe kerülnek.";
                 }
+                return;
             }
+
+            set(correction, value);
+            UpdateNet();
         }
 
         private void numericUpDown_Col_ValueChanged(object sender, EventArgs e)
@@ -1284,23 +1415,58 @@ namespace PaveMetric
 
         private void button_ApplyToAll_Click(object sender, EventArgs e)
         {
+            if (!ValidateNormalizeInputs(out double length, out double width))
+                return;
+
+            var skipped = new List<string>();
+            PerspectiveCorrection activeBefore = _project.ActualPhoto?.PerspectiveCorrection;
+            bool anyReplaced = false;
             foreach (PavementPhoto myPhoto in _project.Photos)
             {
-                if (MainForm.TryParseDouble(textBox_SectionLength.Text, out var tempValue))
-                {
-                    myPhoto.PerspectiveCorrection.Length = tempValue;
-                }
+                PerspectiveCorrection correction = myPhoto.PerspectiveCorrection;
+                bool changed = Math.Abs(correction.Length - length) >= 0.005
+                    || Math.Abs(correction.PavementWidth - width) >= 0.005;
 
-                if (MainForm.TryParseDouble(textBox_PavementWidth.Text, out tempValue))
+                if (changed && myPhoto.Errors.Count > 0 && correction.HasUsableCoordinates)
                 {
-                    myPhoto.PerspectiveCorrection.PavementWidth = tempValue;
+                    // rebuild from the same edges and reproject the errors, as Normalize does
+                    if (!correction.Normalized
+                        || !myPhoto.TryReplaceCorrection(correction.WithDimensions(length, width), out _))
+                    {
+                        skipped.Add(myPhoto.Section.ToString("0.00"));
+                        continue;
+                    }
+                    anyReplaced = true;
+                }
+                else if (changed)
+                {
+                    correction.Length = length;
+                    correction.PavementWidth = width;
                 }
 
                 myPhoto.PerspectiveCorrection.ColCount = (int)numericUpDown_Col.Value;
                 myPhoto.PerspectiveCorrection.RowCount = (int)numericUpDown_Row.Value;
+            }
 
+            // undo snapshots refer to the replaced corrections
+            if (anyReplaced)
+                ClearEditHistory();
+            if (_project.ActualPhoto != null && _project.ActualPhoto.PerspectiveCorrection != activeBefore)
+            {
+                DisposeTopViewBitmap();
+                UpdateDrawing();
+            }
+            else if (_project.ActualPhoto != null)
+            {
                 UpdateNet();
             }
+
+            if (skipped.Count > 0)
+                MessageBox.Show(this,
+                    "Ezeknél a szelvényeknél a méretek nem módosultak, mert a rögzített hibák nem " +
+                    "vetíthetők át (nincs normalizálva, vagy a hiba az új tartományon kívülre esne): " +
+                    string.Join(", ", skipped) + ". Ezeket egyenként normalizálja.",
+                    "Alkalmazás mindegyikre", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         /// <summary>
@@ -1482,7 +1648,12 @@ namespace PaveMetric
             return Math.Abs(first.Left - second.Left) < tolerance
                 && Math.Abs(first.Right - second.Right) < tolerance
                 && Math.Abs(first.StartSection - second.StartSection) < tolerance
-                && Math.Abs(first.EndSection - second.EndSection) < tolerance;
+                && Math.Abs(first.EndSection - second.EndSection) < tolerance
+                && ((first.ImageOutline == null && second.ImageOutline == null)
+                    || (first.ImageOutline != null && second.ImageOutline != null
+                        && first.ImageOutline.Count == second.ImageOutline.Count
+                        && first.ImageOutline.Zip(second.ImageOutline, (a, b) =>
+                            Math.Abs(a.X - b.X) < tolerance && Math.Abs(a.Y - b.Y) < tolerance).All(equal => equal)));
         }
 
         private sealed class EditOperation

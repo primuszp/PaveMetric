@@ -1,6 +1,12 @@
 using PaveMetric;
 using System.Drawing;
 
+if (args.Contains("--measurement-audit"))
+{
+    MeasurementAudit.Run();
+    return;
+}
+
 const double tolerance = 1e-8;
 string? pilisPhotoPath = args.Length > 0 ? args[0] : null;
 string? pilisOutputPath = args.Length > 1 ? args[1] : null;
@@ -22,10 +28,48 @@ RunCurvedTopViewTest();
 RunCurvedSlantedBoundaryTest();
 RunCurvedMatchesStraightModelTest();
 RunParallelArcsPerspectiveTest();
+RunWidthCalibrationTests();
+MetricRoadTests.Run();
+ErrorReprojectionTests.Run();
+NormalizationHistoryTests.Run();
+DimensionChangeTests.Run();
 if (pilisPhotoPath != null && pilisOutputPath != null)
     ExportPilisTopView(pilisPhotoPath, pilisOutputPath);
 
 Console.WriteLine("All geometry checks passed.");
+
+static void RunWidthCalibrationTests()
+{
+    foreach (bool curved in new[] { false, true })
+    foreach (double initialWidth in new[] { 2.0, 6.0, 12.0 })
+    {
+        PerspectiveCorrection correction = curved ? CreateCurvedCorrection() : CreateCorrection(100, 400, 1100, 800);
+        correction.PavementWidth = initialWidth;
+        foreach (double station in new[] { 0.0, 1.0, 5.0, 9.0, 10.0 })
+        {
+            // A 1 m transverse base covers one quarter of a road whose true width is 4 m.
+            // The current arbitrary width must cancel out of the lateral fraction.
+            Pos start = correction.GetRealPosition(correction.GetScreenPosition(new Pos(initialWidth / 4, station)));
+            Pos end = correction.GetRealPosition(correction.GetScreenPosition(new Pos(initialWidth / 2, station)));
+            Assert(correction.TryGetWidthFromTransverseReference(start, end, 1.0, out double width),
+                "Transverse width reference must be accepted.");
+            AssertClose(4.0, width, "Width calibration must use the local lateral fraction", 1e-4);
+            Assert(correction.TryGetWidthFromTransverseReference(end, start, 1.0, out double reversedWidth),
+                "Reversed width reference must be accepted.");
+            AssertClose(width, reversedWidth, "Width reference direction must not matter");
+        }
+        Pos p = new Pos(initialWidth / 4, 2.0);
+        Assert(!correction.TryGetWidthFromTransverseReference(p, p, 1.0, out _), "Coincident reference must fail.");
+        Assert(!correction.TryGetWidthFromTransverseReference(p, new Pos(p.X, 3), 1.0, out _), "Longitudinal reference must fail.");
+        Assert(!correction.TryGetWidthFromTransverseReference(p, new Pos(p.X + initialWidth / 4, 3), 1.0, out _), "Diagonal reference must fail.");
+        Assert(!correction.TryGetWidthFromTransverseReference(new Pos(-1, 2), p, 1.0, out _), "Outside reference must fail.");
+        foreach (double invalid in new[] { 0, -1, double.NaN, double.PositiveInfinity })
+            Assert(!correction.TryGetWidthFromTransverseReference(p, new Pos(initialWidth / 2, 2), invalid, out _), "Invalid reference length must fail.");
+        Assert(!correction.TryGetWidthFromTransverseReference(p, new Pos(double.NaN, 2), 1.0, out _), "Non-finite endpoint must fail.");
+        correction.Normalized = false;
+        Assert(!correction.TryGetWidthFromTransverseReference(p, new Pos(initialWidth / 2, 2), 1.0, out _), "Stale correction must fail.");
+    }
+}
 
 static PerspectiveCorrection CreateCorrection(
     double leftNear,
@@ -429,10 +473,9 @@ static void RunParallelArcsPerspectiveTest()
     {
         foreach (double y in new[] { 1.0, 3.0, 5.0, 7.0, 9.0 })
         {
-            // Tolerances: the 1/width^2 stationing is exact for straight edges and for the
-            // constant-curvature pairing, but a strongly pitched camera combined with an
-            // oblique curving heading leaves a few-percent residual — acceptable for the
-            // aggressive geometry of this test (14 degree heading change, 14 degree pitch).
+            // This selected sample grid allows model residuals; it is not an accuracy
+            // guarantee for circular arcs. The denser --measurement-audit reports larger
+            // station errors, especially as radius decreases.
             Pos screen = ProjectRoadPoint(x, y, centerRadius, roadWidth);
             Pos real = correction.GetRealPosition(screen);
             AssertClose(x, real.X, $"parallel arcs: real X at ({x},{y})", 0.15);

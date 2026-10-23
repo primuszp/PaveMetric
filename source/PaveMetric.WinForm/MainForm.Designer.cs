@@ -414,6 +414,7 @@
             this.button_Measure.Name = "button_Measure";
             this.button_Measure.Size = new System.Drawing.Size(67, 30);
             this.button_Measure.Text = "Mérés";
+            this.button_Measure.ToolTipText = "Szélesség beállítása ismert keresztirányú bázissal: jelölje ki a két végpontot ugyanabban az útkeresztmetszetben.";
             this.button_Measure.Click += new System.EventHandler(this.button_Measure_Click);
             // 
             // label_Measure
@@ -430,6 +431,7 @@
             this.textBox_MeasureBase.Name = "textBox_MeasureBase";
             this.textBox_MeasureBase.Size = new System.Drawing.Size(40, 31);
             this.textBox_MeasureBase.Text = "1000";
+            this.textBox_MeasureBase.ToolTipText = "A keresztirányú bázis ismert hossza milliméterben (pl. 1000 = 1 m).";
             // 
             // labelUnit
             // 

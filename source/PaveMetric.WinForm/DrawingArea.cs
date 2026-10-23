@@ -120,7 +120,7 @@ namespace PaveMetric
             }
         }
 
-        public Action<double> MeasureAction { get; set; }
+        public Action<Pos, Pos> MeasureAction { get; set; }
 
         public delegate void MouseMoveEventHandler(object sender, MouseMoveEventArgs e);
         public event MouseMoveEventHandler OnDrawingAreaMouseMove;
@@ -831,25 +831,9 @@ namespace PaveMetric
         {
             if (PavementPhoto != null)
             {
-                double pavementWidth2 = PavementPhoto.PerspectiveCorrection.PavementWidth / 2.0;
-                double startSection = PavementPhoto.Section;
-
                 foreach (SurfaceError myError in PavementPhoto.Errors)
                 {
-                    double leftReal = myError.Left + pavementWidth2;
-                    double rightReal = myError.Right + pavementWidth2;
-                    double nearReal = myError.StartSection - startSection;
-                    double farReal = myError.EndSection - startSection;
-
-                    Pos[] screenPositions = topViewEnabled
-                        ? new Pos[]
-                        {
-                            RealToViewPosition(new Pos(leftReal, nearReal)),
-                            RealToViewPosition(new Pos(rightReal, nearReal)),
-                            RealToViewPosition(new Pos(rightReal, farReal)),
-                            RealToViewPosition(new Pos(leftReal, farReal))
-                        }
-                        : PavementPhoto.PerspectiveCorrection.GetScreenAreaPolygon(leftReal, rightReal, nearReal, farReal);
+                    Pos[] screenPositions = GetErrorViewPolygon(myError);
 
                     Point[] points = new Point[screenPositions.Length];
                     for (int i = 0; i < screenPositions.Length; i++)
@@ -999,17 +983,11 @@ namespace PaveMetric
             if (PavementPhoto == null || !PavementPhoto.PerspectiveCorrection.Normalized)
                 return;
 
-            double pavementWidth2 = PavementPhoto.PerspectiveCorrection.PavementWidth / 2.0;
-            Pos real = ViewToRealPosition(new Pos(screenX, screenY));
-            real.X -= pavementWidth2;
-            real.Y += PavementPhoto.Section;
-
             for (int i = PavementPhoto.Errors.Count - 1; i >= 0; i--)
             {
                 SurfaceError error = PavementPhoto.Errors[i];
-                if (IsErrorVisible(error)
-                    && real.X >= error.Left && real.X <= error.Right
-                    && real.Y >= error.StartSection && real.Y <= error.EndSection)
+                if (IsErrorVisible(error) && error.Contains(PavementPhoto.PerspectiveCorrection,
+                    PavementPhoto.Section, ViewPointToImage(new Pos(screenX, screenY))))
                 {
                     SelectedError = error;
                     break;
@@ -1047,6 +1025,7 @@ namespace PaveMetric
                 SelectedError.StartSection = Math.Min(y, SelectedError.EndSection - minimumSize);
             else
                 SelectedError.EndSection = Math.Max(y, SelectedError.StartSection + minimumSize);
+            SelectedError.TransformOutlineFrom(errorBeforeEdit, PavementPhoto.PerspectiveCorrection, PavementPhoto.Section);
         }
 
         private void MoveSelectedError(double screenX, double screenY)
@@ -1067,6 +1046,7 @@ namespace PaveMetric
             SelectedError.Right = newLeft + w;
             SelectedError.StartSection = newStart;
             SelectedError.EndSection = newStart + h;
+            SelectedError.TransformOutlineFrom(errorBeforeEdit, PavementPhoto.PerspectiveCorrection, PavementPhoto.Section);
         }
 
         private bool IsInsideSelectedError(double screenX, double screenY)
@@ -1076,12 +1056,20 @@ namespace PaveMetric
                 || !IsErrorVisible(SelectedError))
                 return false;
 
-            double pw2 = PavementPhoto.PerspectiveCorrection.PavementWidth / 2.0;
-            Pos real = ViewToRealPosition(new Pos(screenX, screenY));
-            double x = real.X - pw2;
-            double y = real.Y + PavementPhoto.Section;
-            return x > SelectedError.Left && x < SelectedError.Right
-                && y > SelectedError.StartSection && y < SelectedError.EndSection;
+            return SelectedError.Contains(PavementPhoto.PerspectiveCorrection, PavementPhoto.Section,
+                ViewPointToImage(new Pos(screenX, screenY)));
+        }
+
+        private Pos ViewPointToImage(Pos point) => topViewEnabled
+            ? PavementPhoto.PerspectiveCorrection.GetScreenPosition(ViewToRealPosition(point)) : point;
+
+        private Pos[] GetErrorViewPolygon(SurfaceError error)
+        {
+            Pos[] polygon = error.GetImageOutline(PavementPhoto.PerspectiveCorrection, PavementPhoto.Section);
+            if (topViewEnabled)
+                for (int i = 0; i < polygon.Length; i++)
+                    polygon[i] = RealToViewPosition(PavementPhoto.PerspectiveCorrection.GetRealPosition(polygon[i]));
+            return polygon;
         }
 
         private int HitTestSelectedHandle(Point mousePoint)
@@ -1517,13 +1505,9 @@ namespace PaveMetric
             {
                 Pos start = measure_ruler.P0;
                 Pos end = measure_ruler.P1;
-                double measure_length = Math.Sqrt(
-                    (end.Y - start.Y) * (end.Y - start.Y) +
-                    (end.X - start.X) * (end.X - start.X));
-                MeasureAction?.Invoke(measure_length);
                 measure_ruler = null;
+                MeasureAction?.Invoke(start, end);
             }
-            else MeasureAction?.Invoke(0);
         }
 
         private void DrawingArea_Disposed(object sender, EventArgs e)

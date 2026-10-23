@@ -82,6 +82,34 @@ The built executable is placed under:
 source/PaveMetric.WinForm/bin/Release/net8.0-windows/
 ```
 
+### Measurement accuracy
+
+The **Mérés** tool sets pavement width from a known transverse reference, entered in
+millimetres. Normalize first, then select two distinct points within the same road
+cross-section. Width is inferred from the local corrected lateral fraction, rather
+than a pixel scale taken at the far boundary. Longitudinal and diagonal references
+are not supported for width calibration.
+
+Curved-edge rectification fits a metric pavement plane using constant-width offset
+edges and the known centerline length. Stationing follows centerline arc length;
+defect areas include the different scales on the inner and outer sides of a bend.
+If the fit is incompatible, the Normalize button shows a warning and the original
+approximation remains available. Older project files retain their original model
+until the photo is explicitly normalized again. Passing coordinate round-trip tests
+does not establish physical measurement accuracy. See
+[the measurement audit](docs/measurement-audit.md) for independent tests and limits.
+
+Re-normalizing automatically reprojects existing defects while preserving their
+photo outlines. The outlines are saved in the project and used for selection,
+editing, overlays and physical area calculations. Normalization supports Undo/Redo;
+if a defect cannot be mapped, the geometry and defects are left unchanged.
+
+Run the independent synthetic camera audit:
+
+```powershell
+dotnet run --project source\PaveMetric.GeometryTests -- --measurement-audit
+```
+
 ---
 
 ## Basic Workflow

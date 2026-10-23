@@ -379,7 +379,8 @@ namespace PaveMetric
 
             foreach (var myPhoto in _photos)
             {
-                var pavementArea = myPhoto.PerspectiveCorrection.PavementWidth * myPhoto.PerspectiveCorrection.Length;
+                var pavementArea = myPhoto.PerspectiveCorrection.GetRoadArea(0,
+                    myPhoto.PerspectiveCorrection.PavementWidth, 0, myPhoto.PerspectiveCorrection.Length);
                 var correctedPavementArea = CorrectedPavementArea(index);
 
                 var errorAreaList = new Dictionary<int, double>();
@@ -388,7 +389,7 @@ namespace PaveMetric
                 foreach (var myError in HasDimensions(myPhoto) ? myPhoto.Errors : new List<SurfaceError>())
                 {
                     var errorCode = myError.ErrorCode;
-                    var errorArea = (myError.Right - myError.Left) * (myError.EndSection - myError.StartSection);
+                    var errorArea = myError.GetArea(myPhoto.PerspectiveCorrection, myPhoto.Section);
                     double errorAreaPercent = errorArea / pavementArea;
                     double correctedErrorArea = correctedPavementArea * errorAreaPercent;
 
@@ -411,7 +412,8 @@ namespace PaveMetric
 
             for (int i = 0; i < _photos.Count; i++)
             {
-                var pavementArea = _photos[i].PerspectiveCorrection.PavementWidth * _photos[i].PerspectiveCorrection.Length;
+                var pavementArea = _photos[i].PerspectiveCorrection.GetRoadArea(0,
+                    _photos[i].PerspectiveCorrection.PavementWidth, 0, _photos[i].PerspectiveCorrection.Length);
                 var correctedPavementArea = CorrectedPavementArea(i);
 
                 var errorAreaPercentList = new Dictionary<int, double>();
@@ -420,7 +422,7 @@ namespace PaveMetric
                 foreach (var error in HasDimensions(_photos[i]) ? _photos[i].Errors : new List<SurfaceError>())
                 {
                     var errorCode = error.ErrorCode;
-                    var errorArea = (error.Right - error.Left) * (error.EndSection - error.StartSection);
+                    var errorArea = error.GetArea(_photos[i].PerspectiveCorrection, _photos[i].Section);
 
                     double errorAreaPercent = errorArea / pavementArea;
                     double correctedErrorArea = correctedPavementArea * errorAreaPercent;
@@ -515,9 +517,6 @@ namespace PaveMetric
         {
             foreach (var photo in Photos)
             {
-                var pavementWidth2 = photo.PerspectiveCorrection.PavementWidth / 2.0;
-                var startSection = photo.Section;
-
                 var dinf = Directory.CreateDirectory(Path.Combine(ProjectPath, "Errors"));
                 var file = Path.Combine(ProjectPath, photo.PhotoFileName + ".jpg");
 
@@ -529,12 +528,7 @@ namespace PaveMetric
 
                 foreach (var myError in photo.Errors)
                 {
-                    var leftReal = myError.Left + pavementWidth2;
-                    var rightReal = myError.Right + pavementWidth2;
-                    var nearReal = myError.StartSection - startSection;
-                    var farReal = myError.EndSection - startSection;
-
-                    var screenPositions = photo.PerspectiveCorrection.GetScreenAreaPolygon(leftReal, rightReal, nearReal, farReal);
+                    var screenPositions = myError.GetImageOutline(photo.PerspectiveCorrection, photo.Section);
 
                     var points = new Point[screenPositions.Length];
 

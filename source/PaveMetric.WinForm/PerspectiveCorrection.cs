@@ -10,8 +10,19 @@ namespace PaveMetric
     [Serializable]
     public class PerspectiveCorrection
     {
-        public double PavementWidth { get; set; }
-        public double Length { get; set; }
+        private double _pavementWidth;
+        private double _length;
+        // The cached curved model is scaled by these, so a change must rebuild it.
+        public double PavementWidth
+        {
+            get => _pavementWidth;
+            set { _pavementWidth = value; InvalidateCurvedGeometry(); }
+        }
+        public double Length
+        {
+            get => _length;
+            set { _length = value; InvalidateCurvedGeometry(); }
+        }
         public double FarDistance { get; set; }
         public double NearDistance { get; set; }
         public double Alpha { get; set; }
@@ -27,6 +38,65 @@ namespace PaveMetric
         [XmlIgnore] public double TopViewFarRealY { get; private set; }
 
         [XmlIgnore] private CurvedGeometry _curvedGeometry;
+        private int _roadModelVersion;
+        // Missing from older XML files: retain their original coordinate interpretation
+        // until the user explicitly normalizes the photo again.
+        public int RoadModelVersion
+        {
+            get => _roadModelVersion;
+            set { _roadModelVersion = value; InvalidateCurvedGeometry(); }
+        }
+        [XmlIgnore] public bool UsesMetricRoadPlane => HasCurvedGeometry() && GetCurvedGeometry()?.HasMetricPlane == true;
+        [XmlIgnore] public bool HasUsableCoordinates => HasValidGeometry();
+
+        /// <summary>Area of a preserved photo boundary in the current physical plane.</summary>
+        public double GetImagePolygonArea(IReadOnlyList<Pos> outline)
+        {
+            if (outline == null || outline.Count < 3 || !HasValidGeometry()) return 0;
+            CurvedGeometry geometry = HasCurvedGeometry() ? GetCurvedGeometry() : null;
+            Pos Map(Pos p) => geometry?.HasMetricPlane == true ? geometry.ToMetric(p) : GetRealPosition(p);
+            Pos origin = Map(outline[0]), previous = origin;
+            if (!double.IsFinite(origin.X + origin.Y)) return 0;
+            double twiceArea = 0;
+            for (int i = 1; i < outline.Count; i++)
+            {
+                Pos current = Map(outline[i]);
+                if (!double.IsFinite(current.X + current.Y)) return 0;
+                twiceArea += (previous.X - origin.X) * (current.Y - origin.Y)
+                    - (current.X - origin.X) * (previous.Y - origin.Y);
+                previous = current;
+            }
+            return Math.Abs(twiceArea) / 2;
+        }
+
+        /// <summary>Physical area of a road-coordinate rectangle, including inner/outer curve scale.</summary>
+        public double GetRoadArea(double left, double right, double near, double far)
+        {
+            if (!double.IsFinite(left + right + near + far) || right <= left || far <= near)
+                return 0;
+            CurvedGeometry geometry = HasCurvedGeometry() ? GetCurvedGeometry() : null;
+            if (geometry?.HasMetricPlane != true)
+                return (right - left) * (far - near);
+            near = Math.Clamp(near, 0, Length);
+            far = Math.Clamp(far, 0, Length);
+            if (far <= near) return 0;
+            double area = 0;
+            double a = left / PavementWidth, b = right / PavementWidth;
+            int segments = Math.Max(1, (int)Math.Ceiling((far - near) / Length * (geometry.Count - 1)));
+            geometry.GetCrossSectionAtRealY(near, out Pos l0, out Pos r0);
+            Pos p0 = new Pos(Lerp(l0.X, r0.X, a), Lerp(l0.Y, r0.Y, a));
+            Pos q0 = new Pos(Lerp(l0.X, r0.X, b), Lerp(l0.Y, r0.Y, b));
+            for (int i = 1; i <= segments; i++)
+            {
+                geometry.GetCrossSectionAtRealY(Lerp(near, far, (double)i / segments), out Pos l, out Pos r);
+                Pos p = new Pos(Lerp(l.X, r.X, a), Lerp(l.Y, r.Y, a));
+                Pos q = new Pos(Lerp(l.X, r.X, b), Lerp(l.Y, r.Y, b));
+                area += Math.Abs((p0.X * q0.Y - q0.X * p0.Y) + (q0.X * q.Y - q.X * q0.Y)
+                    + (q.X * p.Y - p.X * q.Y) + (p.X * p0.Y - p0.X * p.Y)) / 2;
+                p0 = p; q0 = q;
+            }
+            return area;
+        }
 
         public PerspectiveCorrection()
         {
@@ -117,6 +187,32 @@ namespace PaveMetric
             }
         }
 
+        /// <summary>
+        /// A new, normalized correction with the same photo edges but other real dimensions.
+        /// Use it with <see cref="PavementPhoto.TryReplaceCorrection"/> so recorded errors are
+        /// reprojected instead of silently moving on the photo.
+        /// </summary>
+        public PerspectiveCorrection WithDimensions(double length, double width)
+        {
+            var copy = new PerspectiveCorrection { RowCount = RowCount, ColCount = ColCount };
+            if (LeftEdgePoints?.Count > 2 || RightEdgePoints?.Count > 2)
+            {
+                copy.NormalizeCurved(LeftEdgePoints, RightEdgePoints, length, width);
+            }
+            else
+            {
+                Line Between(Pos a, Pos b) => new Line { P0 = ClonePoint(a), P1 = ClonePoint(b) };
+                copy.Normalize(new[]
+                {
+                    Between(LeftEdge.P1, RightEdge.P1),   // far
+                    Between(LeftEdge.P0, RightEdge.P0),   // near
+                    Between(LeftEdge.P0, LeftEdge.P1),
+                    Between(RightEdge.P0, RightEdge.P1),
+                }, length, width);
+            }
+            return copy;
+        }
+
         public void Normalize(Line[] lines, double length, double width)
         {
             Normalized = false;
@@ -147,6 +243,7 @@ namespace PaveMetric
             RightEdge.P1 = ClonePoint(farRight);
             LeftEdgePoints = new List<Pos> { ClonePoint(nearLeft), ClonePoint(farLeft) };
             RightEdgePoints = new List<Pos> { ClonePoint(nearRight), ClonePoint(farRight) };
+            RoadModelVersion = 1;
             InvalidateCurvedGeometry();
             Normalized = true;
         }
@@ -200,6 +297,7 @@ namespace PaveMetric
             NearDistance = (LeftEdge.P0.Y + RightEdge.P0.Y) / 2.0;
             FarDistance = (LeftEdge.P1.Y + RightEdge.P1.Y) / 2.0;
 
+            RoadModelVersion = 1;
             InvalidateCurvedGeometry();
             TopViewNearRealY = 0.0;
             TopViewFarRealY = Length;
@@ -409,6 +507,70 @@ namespace PaveMetric
             return cross * cross / lengthSquared;
         }
 
+        /// <summary>
+        /// Calibrates a photo reference while updating the metric plane as its width changes.
+        /// This avoids using a plane fitted to an arbitrary initial width as a fixed ruler.
+        /// </summary>
+        public bool TryCalibrateWidthFromImageReference(Pos start, Pos end, double referenceLength, out double width)
+        {
+            width = 0;
+            if (!Normalized || start == null || end == null || !double.IsFinite(referenceLength)
+                || referenceLength <= 0 || !HasValidGeometry()) return false;
+            PerspectiveCorrection trial = this;
+            double candidate = PavementWidth;
+            for (int iteration = 0; iteration < 8; iteration++)
+            {
+                Pos a = trial.GetRealPosition(start), b = trial.GetRealPosition(end);
+                double fraction = Math.Abs(b.X - a.X) / trial.PavementWidth;
+                if (!double.IsFinite(fraction) || fraction <= 1e-6 || fraction > 1.000001) return false;
+                double next = referenceLength / fraction;
+                if (!double.IsFinite(next) || next <= 0) return false;
+                if (RoadModelVersion == 0 || !HasCurvedGeometry() || Math.Abs(next - candidate) < 0.0005)
+                    return trial.TryGetWidthFromTransverseReference(a, b, referenceLength, out width);
+                candidate = next;
+                trial = new PerspectiveCorrection();
+                trial.NormalizeCurved(LeftEdgePoints, RightEdgePoints, Length, candidate);
+            }
+            return trial.TryGetWidthFromTransverseReference(trial.GetRealPosition(start),
+                trial.GetRealPosition(end), referenceLength, out width);
+        }
+
+        /// <summary>
+        /// Infers constant pavement width from a known transverse reference. Endpoints are
+        /// road coordinates obtained from the current correction, and referenceLength is in
+        /// metres. The result inherits any errors in the underlying curved road model.
+        /// </summary>
+        public bool TryGetWidthFromTransverseReference(Pos start, Pos end, double referenceLength, out double width)
+        {
+            width = 0.0;
+            if (!Normalized || !HasValidGeometry() || start == null || end == null
+                || !double.IsFinite(referenceLength) || referenceLength <= 0.0
+                || !double.IsFinite(PavementWidth) || !double.IsFinite(Length)
+                || !double.IsFinite(start.X) || !double.IsFinite(start.Y)
+                || !double.IsFinite(end.X) || !double.IsFinite(end.Y))
+                return false;
+
+            double epsilon = 1e-6;
+            if (start.X < -epsilon || start.X > PavementWidth + epsilon
+                || end.X < -epsilon || end.X > PavementWidth + epsilon
+                || start.Y < -epsilon || start.Y > Length + epsilon
+                || end.Y < -epsilon || end.Y > Length + epsilon)
+                return false;
+
+            // Allow small endpoint-placement errors, but do not treat a longitudinal or
+            // diagonal base as a transverse reference. This is a UI tolerance, not a
+            // statement of the geometric model's accuracy.
+            if (Math.Abs(end.Y - start.Y) > Math.Max(0.02, referenceLength * 0.05))
+                return false;
+
+            double fraction = Math.Abs(end.X - start.X) / PavementWidth;
+            if (!double.IsFinite(fraction) || fraction <= 1e-6)
+                return false;
+
+            width = referenceLength / fraction;
+            return double.IsFinite(width) && width > 0.0;
+        }
+
         public Pos GetRealPosition(Pos ScreenPosition)
         {
             if (!HasValidGeometry())
@@ -505,9 +667,9 @@ namespace PaveMetric
 
             double lateral = PavementWidth <= 0.0 ? 0.0 : realPosition.X / PavementWidth;
             geometry.GetCrossSectionAtRealY(realPosition.Y, out Pos left, out Pos right);
-            return new Pos(
+            return geometry.ToScreen(new Pos(
                 Lerp(left.X, right.X, lateral),
-                Lerp(left.Y, right.Y, lateral));
+                Lerp(left.Y, right.Y, lateral)));
         }
 
         private Pos GetRealPositionCurved(Pos screenPosition)
@@ -516,6 +678,7 @@ namespace PaveMetric
             if (geometry == null)
                 return new Pos();
 
+            screenPosition = geometry.ToMetric(screenPosition);
             double index = geometry.FindClosestCrossSection(screenPosition);
             geometry.GetCrossSectionAt(index, out Pos left, out Pos right);
             double dx = right.X - left.X;
@@ -552,7 +715,7 @@ namespace PaveMetric
                 return null;
 
             if (_curvedGeometry == null || _curvedGeometry.IsStale(LeftEdgePoints, RightEdgePoints, PavementWidth, Length))
-                _curvedGeometry = CurvedGeometry.Build(LeftEdgePoints, RightEdgePoints, PavementWidth, Length);
+                _curvedGeometry = CurvedGeometry.Build(LeftEdgePoints, RightEdgePoints, PavementWidth, Length, RoadModelVersion >= 1);
 
             return _curvedGeometry;
         }
@@ -703,9 +866,11 @@ namespace PaveMetric
 
                         for (int x = 0; x < width; x++)
                         {
+                            geometry.ToScreen(left.X + stepX * x, left.Y + stepY * x,
+                                out double imageX, out double imageY);
                             SampleBicubic(
                                 sourceBase, sourceStride, sourceWidth, sourceHeight,
-                                left.X + stepX * x, left.Y + stepY * x, resultRow + x * 4);
+                                imageX, imageY, resultRow + x * 4);
                         }
                     });
                 }
@@ -956,20 +1121,24 @@ namespace PaveMetric
         }
 
         /// <summary>
-        /// Precomputed perspective-correct cross-section table for curved pavement edges.
-        /// The two edges are parallel arcs with independent control points and curvature, so
-        /// their points are never paired by control-point index. Instead, each edge is
-        /// parameterized by its own perspective-corrected arc length (screen length weighted by
-        /// the 1/width^2 foreshortening density, width being the distance to the other edge),
-        /// and points at equal corrected fractions are paired. Because both edges vanish at the
-        /// same point, this reproduces the exact projective model for straight edges, and pairs
-        /// parallel arcs of differing curvature by equal real station (exact for constant
-        /// curvature — equal fractions of the swept angle).
+        /// Cross-sections paired in a fitted metric pavement plane, parameterized by
+        /// centerline arc length. Incompatible geometry and legacy projects retain the
+        /// original approximate inverse-width-squared stationing as a compatibility fallback.
         /// Index 0 is the near end (real Y = 0), the last index is the far end (real Y = Length).
         /// </summary>
         private sealed class CurvedGeometry
         {
-            private const int SectionCount = 257;
+            private const int SectionCount = 513;
+            private RoadPlaneModel _plane;
+            private bool _extendCoordinates;
+            public bool HasMetricPlane => _plane != null;
+            public Pos ToScreen(Pos point) => _plane?.ToImage(point) ?? point;
+            public Pos ToMetric(Pos point) => _plane?.ToGround(point) ?? point;
+            public void ToScreen(double x, double y, out double screenX, out double screenY)
+            {
+                if (_plane != null) _plane.ToImage(x, y, out screenX, out screenY);
+                else { screenX = x; screenY = y; }
+            }
 
             private Pos[] _left;
             private Pos[] _right;
@@ -994,16 +1163,44 @@ namespace PaveMetric
                     || _sourceLength != length;
             }
 
-            public static CurvedGeometry Build(List<Pos> leftPoints, List<Pos> rightPoints, double width, double length)
+            public static CurvedGeometry Build(List<Pos> leftPoints, List<Pos> rightPoints, double width, double length, bool useMetric)
             {
-                SampledPolyline leftSmooth = new SampledPolyline(GetSmoothEdgePoints(leftPoints));
-                SampledPolyline rightSmooth = new SampledPolyline(GetSmoothEdgePoints(rightPoints));
+                List<Pos> smoothLeft = GetSmoothEdgePoints(leftPoints);
+                List<Pos> smoothRight = GetSmoothEdgePoints(rightPoints);
+                RoadPlaneModel plane = useMetric ? RoadPlaneModel.Fit(smoothLeft, smoothRight, width, length) : null;
+                if (plane != null)
+                {
+                    if (smoothLeft.Count == 2 && smoothRight.Count == 2)
+                        return new CurvedGeometry { _plane = plane, _extendCoordinates = useMetric,
+                            _left = new[] { plane.ToGround(smoothLeft[0]), plane.ToGround(smoothLeft[1]) },
+                            _right = new[] { plane.ToGround(smoothRight[0]), plane.ToGround(smoothRight[1]) },
+                            _realY = new[] { 0.0, length }, _sourceLeft = leftPoints, _sourceRight = rightPoints,
+                            _sourceLeftCount = leftPoints.Count, _sourceRightCount = rightPoints.Count,
+                            _sourceWidth = width, _sourceLength = length };
+                    Pos[] leftGround = RoadPlaneModel.Resample(smoothLeft.ConvertAll(plane.ToGround), SectionCount);
+                    Pos[] rightGround = RoadPlaneModel.Resample(smoothRight.ConvertAll(plane.ToGround), SectionCount * 2 - 1);
+                    Pos[] rightPaired = RoadPlaneModel.PairOffsets(leftGround, rightGround);
+                    double[] station = new double[SectionCount];
+                    Pos previousCenter = null;
+                    for (int i = 0; i < SectionCount; i++)
+                    {
+                        Pos center = new Pos((leftGround[i].X + rightPaired[i].X) / 2,
+                            (leftGround[i].Y + rightPaired[i].Y) / 2);
+                        if (previousCenter != null) station[i] = station[i - 1] + SegmentLength(previousCenter, center);
+                        previousCenter = center;
+                    }
+                    for (int i = 1; i < SectionCount; i++) station[i] *= length / station[SectionCount - 1];
+                    return new CurvedGeometry { _plane = plane, _extendCoordinates = useMetric, _left = leftGround, _right = rightPaired, _realY = station,
+                        _sourceLeft = leftPoints, _sourceRight = rightPoints, _sourceLeftCount = leftPoints.Count,
+                        _sourceRightCount = rightPoints.Count, _sourceWidth = width, _sourceLength = length };
+                }
+                SampledPolyline leftSmooth = new SampledPolyline(smoothLeft);
+                SampledPolyline rightSmooth = new SampledPolyline(smoothRight);
 
-                // Perspective-corrected parameterization of each edge: real length per screen
-                // length on a photographed ground plane scales with 1/(road screen width)^2.
-                // The width at an edge point is its distance to the other edge; both edges of a
-                // straight road vanish at the same point, so this distance is proportional to
-                // the true cross-width and the result matches the projective straight model.
+                // Approximate station parameterization using inverse squared nearest-edge
+                // distance. For converging straight edges this follows the projective model
+                // under the assumptions above. Curved edges do not generally satisfy that
+                // relationship; see the independent --measurement-audit camera projection.
                 // The edges are resampled densely so the density integral converges.
                 const int integrationSamples = 1024;
                 SampledPolyline leftEdge = leftSmooth.ResampleUniform(integrationSamples);
@@ -1011,12 +1208,13 @@ namespace PaveMetric
                 double[] leftStation = leftEdge.BuildCorrectedStations(rightSmooth);
                 double[] rightStation = rightEdge.BuildCorrectedStations(leftSmooth);
 
-                Pos[] left = new Pos[SectionCount];
-                Pos[] right = new Pos[SectionCount];
-                double[] realY = new double[SectionCount];
-                for (int i = 0; i < SectionCount; i++)
+                const int legacyCount = 257;
+                Pos[] left = new Pos[legacyCount];
+                Pos[] right = new Pos[legacyCount];
+                double[] realY = new double[legacyCount];
+                for (int i = 0; i < legacyCount; i++)
                 {
-                    double fraction = (double)i / (SectionCount - 1);
+                    double fraction = (double)i / (legacyCount - 1);
                     left[i] = leftEdge.PointAtStation(leftStation, fraction);
                     right[i] = rightEdge.PointAtStation(rightStation, fraction);
                     realY[i] = fraction * length;
@@ -1024,6 +1222,7 @@ namespace PaveMetric
 
                 return new CurvedGeometry
                 {
+                    _extendCoordinates = useMetric,
                     _left = left,
                     _right = right,
                     _realY = realY,
@@ -1036,12 +1235,23 @@ namespace PaveMetric
                 };
             }
 
-            /// <summary>Cross-section endpoints at a fractional table index (clamped).</summary>
+            /// <summary>Cross-section endpoints; version 1 also extends beyond the ends.</summary>
             public void GetCrossSectionAt(double index, out Pos left, out Pos right)
             {
-                index = Math.Clamp(index, 0.0, Count - 1);
-                int i0 = Math.Min((int)index, Count - 2);
+                if (!_extendCoordinates) index = Math.Clamp(index, 0.0, Count - 1);
+                int i0 = Math.Clamp((int)index, 0, Count - 2);
                 double amount = index - i0;
+                if (_extendCoordinates && Count > 2 && (index < 0 || index > Count - 1))
+                {
+                    int end = index < 0 ? 0 : Count - 1;
+                    double dx = (_left[i0 + 1].X - _left[i0].X + _right[i0 + 1].X - _right[i0].X) / 2;
+                    double dy = (_left[i0 + 1].Y - _left[i0].Y + _right[i0 + 1].Y - _right[i0].Y) / 2;
+                    // Continue the terminal tangent at fixed width. Continuing the
+                    // change of width as well creates a fan with a remote singularity.
+                    left = new Pos(_left[end].X + (index - end) * dx, _left[end].Y + (index - end) * dy);
+                    right = new Pos(_right[end].X + (index - end) * dx, _right[end].Y + (index - end) * dy);
+                    return;
+                }
                 left = new Pos(
                     Lerp(_left[i0].X, _left[i0 + 1].X, amount),
                     Lerp(_left[i0].Y, _left[i0 + 1].Y, amount));
@@ -1052,14 +1262,14 @@ namespace PaveMetric
 
             public double GetRealYAt(double index)
             {
-                index = Math.Clamp(index, 0.0, Count - 1);
-                int i0 = Math.Min((int)index, Count - 2);
+                if (!_extendCoordinates) index = Math.Clamp(index, 0.0, Count - 1);
+                int i0 = Math.Clamp((int)index, 0, Count - 2);
                 return Lerp(_realY[i0], _realY[i0 + 1], index - i0);
             }
 
             public void GetCrossSectionAtRealY(double realY, out Pos left, out Pos right)
             {
-                realY = Math.Clamp(realY, _realY[0], _realY[Count - 1]);
+                if (!_extendCoordinates) realY = Math.Clamp(realY, _realY[0], _realY[Count - 1]);
                 int low = 0;
                 int high = Count - 1;
                 while (high - low > 1)
@@ -1079,6 +1289,7 @@ namespace PaveMetric
             /// <summary>Fractional table index of the cross-section closest to a screen point.</summary>
             public double FindClosestCrossSection(Pos screenPosition)
             {
+                if (_extendCoordinates) return FindExtendedCrossSection(screenPosition);
                 int bestIndex = 0;
                 double bestDistance = double.MaxValue;
                 for (int i = 0; i < Count; i++)
@@ -1091,22 +1302,89 @@ namespace PaveMetric
                     }
                 }
 
-                double low = Math.Max(0, bestIndex - 1);
-                double high = Math.Min(Count - 1, bestIndex + 1);
-                for (int i = 0; i < 40; i++)
+                double best = bestIndex;
+                // The distance can have a kink at table vertices. Refine each neighboring
+                // strip separately instead of assuming the combined interval is unimodal.
+                for (int segment = Math.Max(0, bestIndex - 2); segment <= Math.Min(Count - 2, bestIndex + 1); segment++)
                 {
-                    double m1 = low + (high - low) / 3.0;
-                    double m2 = high - (high - low) / 3.0;
-                    if (DistanceToCrossSectionSquared(screenPosition, m1) < DistanceToCrossSectionSquared(screenPosition, m2))
-                        high = m2;
-                    else
-                        low = m1;
+                    double low = segment, high = segment + 1;
+                    for (int i = 0; i < 40; i++)
+                    {
+                        double m1 = low + (high - low) / 3.0;
+                        double m2 = high - (high - low) / 3.0;
+                        if (DistanceToCrossSectionSquared(screenPosition, m1) < DistanceToCrossSectionSquared(screenPosition, m2)) high = m2;
+                        else low = m1;
+                    }
+                    double candidate = (low + high) / 2;
+                    double distance = DistanceToCrossSectionSquared(screenPosition, candidate);
+                    if (distance < bestDistance) { bestDistance = distance; best = candidate; }
                 }
-
-                return (low + high) / 2.0;
+                return best;
             }
 
-            private double DistanceToCrossSectionSquared(Pos screenPosition, double index)
+            // Invert each bilinear strip exactly, including transverse extensions and
+            // the two end strips. Minimizing distance to sampled finite cross-sections
+            // can miss the correct strip for a footprint beyond a curved road edge.
+            private double FindExtendedCrossSection(Pos point)
+            {
+                double best = double.NaN, bestDistance = double.PositiveInfinity;
+                static double Cross(double ax, double ay, double bx, double by) => ax * by - ay * bx;
+                for (int strip = -1; strip < Count; strip++)
+                {
+                    bool terminal = Count > 2 && (strip == -1 || strip == Count - 1);
+                    if (!terminal && (strip < 0 || strip >= Count - 1)) continue;
+                    int i = Math.Clamp(strip, 0, Count - 2);
+                    Pos l = _left[i], r = _right[i];
+                    double lx = _left[i + 1].X - l.X, ly = _left[i + 1].Y - l.Y;
+                    double wx = r.X - l.X, wy = r.Y - l.Y;
+                    double vx = _right[i + 1].X - _left[i + 1].X - wx;
+                    double vy = _right[i + 1].Y - _left[i + 1].Y - wy;
+                    int origin = i;
+                    if (terminal)
+                    {
+                        origin = strip == -1 ? 0 : Count - 1;
+                        lx += vx / 2; ly += vy / 2;
+                        l = _left[origin]; r = _right[origin];
+                        wx = r.X - l.X; wy = r.Y - l.Y; vx = vy = 0;
+                    }
+                    double px = point.X - l.X, py = point.Y - l.Y;
+                    double a = -Cross(lx, ly, vx, vy);
+                    double b = Cross(px, py, vx, vy) - Cross(lx, ly, wx, wy);
+                    double c = Cross(px, py, wx, wy);
+                    void Consider(double t)
+                    {
+                        if (!double.IsFinite(t)) return;
+                        if (terminal ? (strip == -1 ? t > 0 : t < 0)
+                            : Count > 2 && (t < -1e-8 || t > 1 + 1e-8)) return;
+                        double dx = wx + t * vx, dy = wy + t * vy;
+                        double square = dx * dx + dy * dy;
+                        if (square < 1e-12) return;
+                        double lateral = ((px - t * lx) * dx + (py - t * ly) * dy) / square;
+                        double ex = px - t * lx - lateral * dx, ey = py - t * ly - lateral * dy;
+                        if (ex * ex + ey * ey > 1e-8) return;
+                        double index = origin + t;
+                        // Where extended strips overlap, prefer the root nearest the
+                        // calibrated road, rather than a distant extrapolated branch.
+                        double distance = DistanceToCrossSectionSquared(point, Math.Clamp(index, 0, Count - 1), true);
+                        if (distance < bestDistance) { bestDistance = distance; best = index; }
+                    }
+                    if (Math.Abs(a) < 1e-12 * Math.Max(1, Math.Abs(b)))
+                    {
+                        if (Math.Abs(b) > 1e-20) Consider(-c / b);
+                    }
+                    else
+                    {
+                        double discriminant = b * b - 4 * a * c;
+                        if (discriminant < 0) continue;
+                        double q = -.5 * (b + Math.CopySign(Math.Sqrt(discriminant), b));
+                        Consider(q / a);
+                        if (q != 0) Consider(c / q);
+                    }
+                }
+                return best;
+            }
+
+            private double DistanceToCrossSectionSquared(Pos screenPosition, double index, bool finite = false)
             {
                 GetCrossSectionAt(index, out Pos left, out Pos right);
                 double dx = right.X - left.X;
@@ -1116,7 +1394,10 @@ namespace PaveMetric
                     return double.MaxValue;
 
                 double lateral = ((screenPosition.X - left.X) * dx + (screenPosition.Y - left.Y) * dy) / widthSquared;
-                lateral = Math.Clamp(lateral, 0.0, 1.0);
+                // Inverse station lookup must use the whole transverse line. A saved
+                // footprint can lie beyond a newly traced edge; the nearest point on
+                // the finite road strip has a different station and cannot round-trip.
+                if (finite || !_extendCoordinates) lateral = Math.Clamp(lateral, 0.0, 1.0);
                 double x = Lerp(left.X, right.X, lateral);
                 double y = Lerp(left.Y, right.Y, lateral);
                 double ex = screenPosition.X - x;

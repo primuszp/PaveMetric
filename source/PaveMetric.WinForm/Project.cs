@@ -21,6 +21,44 @@ namespace PaveMetric
         [XmlIgnore]
         public List<ErrorLayerControl> ErrorLayers = new List<ErrorLayerControl>();
 
+        /// <summary>
+        /// Codes of the catalog types offered in this project's palette.
+        /// Null (new project, or one saved before this setting existed) means every type.
+        /// </summary>
+        [XmlIgnore]
+        public List<int> ErrorTypeCodes { get; set; }
+
+        /// <summary>
+        /// XML form of <see cref="ErrorTypeCodes"/>. An array (not the list) so that a missing
+        /// element stays null ("all types") instead of deserializing as an empty selection.
+        /// </summary>
+        [XmlArray("ErrorTypeCodes")]
+        public int[] ErrorTypeCodesXml
+        {
+            get => ErrorTypeCodes?.ToArray();
+            set => ErrorTypeCodes = value?.ToList();
+        }
+
+        public bool IsErrorTypeEnabled(int code) => ErrorTypeCodes == null || ErrorTypeCodes.Contains(code);
+
+        public void SetErrorTypeEnabled(int code, bool enabled)
+        {
+            if (ErrorTypeCodes == null)
+            {
+                if (enabled) return;
+                // switching from "all" to an explicit list: start from the known types
+                ErrorTypeCodes = ErrorLayers.Select(l => l.ErrorCode).Distinct().ToList();
+            }
+            if (enabled && !ErrorTypeCodes.Contains(code))
+                ErrorTypeCodes.Add(code);
+            else if (!enabled)
+                ErrorTypeCodes.Remove(code);
+        }
+
+        /// <summary>Types that must stay in the palette: enabled, or already used by a recorded error.</summary>
+        public bool IsErrorTypeShown(int code) =>
+            IsErrorTypeEnabled(code) || _photos.Any(p => p.Errors.Any(e => e.ErrorCode == code));
+
         public List<PavementPhoto> Photos => _photos;
 
         int _actualPhotoIndex = -1;
@@ -326,8 +364,8 @@ namespace PaveMetric
             var index = 0;
             using var writer = new StreamWriter(fileName, false, Encoding.Default);
 
-            // one column per catalog entry, plus any code that only occurs in the data
-            var codes = ErrorLayers.Select(l => l.ErrorCode)
+            // one column per type selected for this project, plus any code that occurs in the data
+            var codes = ErrorLayers.Select(l => l.ErrorCode).Where(IsErrorTypeEnabled)
                 .Concat(_photos.SelectMany(p => p.Errors).Select(e => e.ErrorCode))
                 .Distinct().OrderBy(c => c).ToList();
 

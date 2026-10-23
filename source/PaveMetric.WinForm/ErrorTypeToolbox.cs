@@ -28,6 +28,11 @@ namespace PaveMetric
         /// <summary>Returns how many recorded errors use the given code (for delete confirmation).</summary>
         public Func<int, int> CountUsage { get; set; }
 
+        /// <summary>Whether the type is selected for the current project's palette.</summary>
+        public Func<int, bool> IsEnabledInProject { get; set; }
+        /// <summary>Raised when the user ticks/unticks a type for the current project.</summary>
+        public event Action<ErrorLayerControl, bool> EnabledInProjectChanged;
+
         private static readonly Color[] _defaultColors =
         {
             Color.FromArgb(220,  50,  50),   // red
@@ -47,7 +52,7 @@ namespace PaveMetric
             Text = "Hibakatalógus";
             ShowInTaskbar = false;
             MinimumSize = new Size(280, 160);
-            Size = new Size(340, 480);
+            Size = new Size(380, 520);
             StartPosition = FormStartPosition.Manual;
             BackColor = Theme.Surface;
             Font = Theme.BaseFont;
@@ -59,9 +64,23 @@ namespace PaveMetric
                 Height = 22,
                 BackColor = Theme.Background,
             };
-            header.Controls.Add(HeaderLabel("Szín", 4, 32));
-            header.Controls.Add(HeaderLabel("Kód", 34, 40));
-            header.Controls.Add(HeaderLabel("Megnevezés", 78, 120));
+            var projectHeader = HeaderLabel("Proj.", 2, 30);
+            new ToolTip().SetToolTip(projectHeader,
+                "Bejelölve: a típus megjelenik ennek a projektnek a hibapalettáján.");
+            header.Controls.Add(projectHeader);
+            header.Controls.Add(HeaderLabel("Szín", 30, 30));
+            header.Controls.Add(HeaderLabel("Kód", 60, 40));
+            header.Controls.Add(HeaderLabel("Megnevezés", 104, 120));
+
+            var allLink = HeaderLink("mind", () => SetAllEnabled(true));
+            var noneLink = HeaderLink("egyik sem", () => SetAllEnabled(false));
+            header.Controls.Add(allLink);
+            header.Controls.Add(noneLink);
+            header.Resize += (s, e) =>
+            {
+                noneLink.Left = header.Width - noneLink.Width - 6;
+                allLink.Left = noneLink.Left - allLink.Width - 6;
+            };
 
             // ── add-new row at bottom ─────────────────────────────────────
             var addPanel = new Panel
@@ -78,7 +97,7 @@ namespace PaveMetric
 
             _addCodeBox = new TextBox
             {
-                Location = new Point(34, 11),
+                Location = new Point(60, 11),
                 Size = new Size(38, 22),
                 Font = Theme.BaseFont,
                 BackColor = Theme.Surface,
@@ -87,7 +106,7 @@ namespace PaveMetric
 
             _addNameBox = new TextBox
             {
-                Location = new Point(78, 11),
+                Location = new Point(104, 11),
                 Size = new Size(120, 22),
                 Font = Theme.BaseFont,
                 BackColor = Theme.Surface,
@@ -150,6 +169,54 @@ namespace PaveMetric
             Font = new Font(Theme.BaseFont.FontFamily, 7.5f),
             ForeColor = Theme.TextMuted,
         };
+
+        private static LinkLabel HeaderLink(string text, Action onClick)
+        {
+            var link = new LinkLabel
+            {
+                Text = text,
+                AutoSize = true,
+                Top = 4,
+                Font = new Font(Theme.BaseFont.FontFamily, 7.5f),
+                LinkColor = Theme.Accent,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            };
+            link.LinkClicked += (s, e) => onClick();
+            return link;
+        }
+
+        /// <summary>
+        /// Ticks or unticks every type for the current project. Types with recorded errors
+        /// are left on (they cannot be hidden while they are in use).
+        /// </summary>
+        private void SetAllEnabled(bool enabled)
+        {
+            foreach (ErrorLayerControl layer in _group.ErrorLayers.ToList())
+            {
+                if (!enabled && (CountUsage?.Invoke(layer.ErrorCode) ?? 0) > 0)
+                    continue;
+                if ((IsEnabledInProject?.Invoke(layer.ErrorCode) ?? true) != enabled)
+                    EnabledInProjectChanged?.Invoke(layer, enabled);
+            }
+            Populate();
+        }
+
+        /// <summary>Handles a row's project checkbox; refuses to hide a type that is in use.</summary>
+        private bool TrySetEnabled(ErrorLayerControl layer, bool enabled)
+        {
+            if (!enabled)
+            {
+                int used = CountUsage?.Invoke(layer.ErrorCode) ?? 0;
+                if (used > 0)
+                {
+                    Warn($"A(z) „{layer.LayerName}” típushoz ebben a projektben {used} rögzített hiba " +
+                         "tartozik, ezért nem rejthető el a palettáról.");
+                    return false;
+                }
+            }
+            EnabledInProjectChanged?.Invoke(layer, enabled);
+            return true;
+        }
 
         public void Populate()
         {
@@ -270,10 +337,24 @@ namespace PaveMetric
                 Margin = new Padding(0);
                 BackColor = Theme.Surface;
 
+                // offered in the current project's palette?
+                var projectCheck = new CheckBox
+                {
+                    Location = new Point(8, 8),
+                    Size = new Size(16, 16),
+                    Checked = owner.IsEnabledInProject?.Invoke(layer.ErrorCode) ?? true,
+                    TabStop = false,
+                };
+                projectCheck.Click += (s, e) =>
+                {
+                    if (!owner.TrySetEnabled(layer, projectCheck.Checked))
+                        projectCheck.Checked = !projectCheck.Checked;
+                };
+
                 // color swatch
                 var colorBtn = new Button
                 {
-                    Location = new Point(6, 5),
+                    Location = new Point(32, 5),
                     Size = new Size(22, 22),
                     FlatStyle = FlatStyle.Flat,
                     BackColor = layer.LayerColor,
@@ -298,7 +379,7 @@ namespace PaveMetric
                 var codeBox = new TextBox
                 {
                     Text = layer.ErrorCode.ToString(),
-                    Location = new Point(34, 7),
+                    Location = new Point(60, 7),
                     Size = new Size(38, 18),
                     BorderStyle = BorderStyle.FixedSingle,
                     BackColor = Theme.Surface,
@@ -346,7 +427,7 @@ namespace PaveMetric
                 var nameBox = new TextBox
                 {
                     Text = layer.LayerName,
-                    Location = new Point(78, 7),
+                    Location = new Point(104, 7),
                     Height = 18,
                     BorderStyle = BorderStyle.FixedSingle,
                     BackColor = Theme.Surface,
@@ -366,6 +447,7 @@ namespace PaveMetric
                     owner.OnCatalogChanged();
                 };
 
+                Controls.Add(projectCheck);
                 Controls.Add(colorBtn);
                 Controls.Add(codeBox);
                 Controls.Add(nameBox);

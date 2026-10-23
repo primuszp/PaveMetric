@@ -57,18 +57,25 @@ namespace PaveMetric
 
             foreach (ErrorType type in ErrorCatalog.Load())
                 AddErrorLayer(type);
-            if (errorLayerGroup.ErrorLayers.Count > 0)
-                errorLayerGroup.SetActiveLayer(errorLayerGroup.ErrorLayers[0]);
+            ApplyProjectErrorTypes();
 
             // errorLayerGroup stays in the left panel (palette); the toolbox is a
             // separate floating editor for the error catalog (code, name, color).
             _errorTypeToolbox = new ErrorTypeToolbox(errorLayerGroup);
             _errorTypeToolbox.CountUsage = CountErrorsWithCode;
+            _errorTypeToolbox.IsEnabledInProject = code => _project.IsErrorTypeEnabled(code);
+            _errorTypeToolbox.EnabledInProjectChanged += (layer, enabled) =>
+            {
+                _project.SetErrorTypeEnabled(layer.ErrorCode, enabled);
+                ApplyProjectErrorTypes();
+            };
             _errorTypeToolbox.UserClosed += (s, e) => _button_ErrorTypes.Checked = false;
             _errorTypeToolbox.TypeAdded += newLayer =>
             {
                 WireErrorLayer(newLayer);
-                drawingArea.RenderNeeded = true;
+                // a type created while working on a project is meant for that project
+                _project.SetErrorTypeEnabled(newLayer.ErrorCode, true);
+                ApplyProjectErrorTypes();
             };
             _errorTypeToolbox.TypeRemoved += layer =>
             {
@@ -157,9 +164,36 @@ namespace PaveMetric
             if (drawingArea.ActualError != null && drawingArea.ActualError.ErrorCode == oldCode)
                 drawingArea.ActualError.ErrorCode = newCode;
 
+            if (_project.ErrorTypeCodes != null && _project.ErrorTypeCodes.Remove(oldCode))
+                _project.ErrorTypeCodes.Add(newCode);
+
             // undo/redo entries may hold errors that are not on any photo right now and so
             // still carry the old code; replaying them would resurrect orphaned errors
             ClearEditHistory();
+            drawingArea.RenderNeeded = true;
+        }
+
+        /// <summary>
+        /// Shows in the palette only the types selected for the current project (plus any type
+        /// that already has recorded errors), and moves the active type off a hidden one.
+        /// </summary>
+        void ApplyProjectErrorTypes()
+        {
+            foreach (ErrorLayerControl layer in errorLayerGroup.ErrorLayers)
+                layer.Visible = _project.IsErrorTypeShown(layer.ErrorCode);
+
+            ErrorLayerControl active = errorLayerGroup.ActiveLayer;
+            if (active == null || !_project.IsErrorTypeShown(active.ErrorCode))
+            {
+                var first = errorLayerGroup.ErrorLayers.FirstOrDefault(l => _project.IsErrorTypeShown(l.ErrorCode));
+                if (first != null)
+                    errorLayerGroup.SetActiveLayer(first);
+                else if (active != null)
+                    active.IsActive = false;
+            }
+
+            if (drawingArea.ActualError != null && !_project.IsErrorTypeShown(drawingArea.ActualError.ErrorCode))
+                drawingArea.Command = 0;
             drawingArea.RenderNeeded = true;
         }
 
@@ -530,6 +564,8 @@ namespace PaveMetric
                 UpdateTitle();
                 UpdateControls();
                 EnsureLayersForProjectCodes();
+                ApplyProjectErrorTypes();
+                _errorTypeToolbox.Populate();
             }
         }
 

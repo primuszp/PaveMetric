@@ -180,7 +180,7 @@ namespace PaveMetric
             if (drawingArea.ActualError != null && drawingArea.ActualError.ErrorCode == oldCode)
                 drawingArea.ActualError.ErrorCode = newCode;
 
-            if (_project.ErrorTypeCodes != null && _project.ErrorTypeCodes.Remove(oldCode))
+            if (_project.ErrorTypeCodes.Remove(oldCode))
                 _project.ErrorTypeCodes.Add(newCode);
 
             // undo/redo entries may hold errors that are not on any photo right now and so
@@ -197,6 +197,9 @@ namespace PaveMetric
         {
             foreach (ErrorLayerControl layer in errorLayerGroup.ErrorLayers)
                 layer.Visible = _project.IsErrorTypeShown(layer.ErrorCode);
+            errorLayerGroup.SetEmptyHint(errorLayerGroup.ErrorLayers.Any(l => _project.IsErrorTypeShown(l.ErrorCode))
+                ? null
+                : "Ehhez a projekthez nincs hibatípus kiválasztva.\n\nA Hibatípusok gombbal pipálja be a használni kívánt típusokat.");
 
             ErrorLayerControl active = errorLayerGroup.ActiveLayer;
             if (active == null || !_project.IsErrorTypeShown(active.ErrorCode))
@@ -282,7 +285,16 @@ namespace PaveMetric
                     SetCurveFromLine(drawingArea.LeftEdgeCurvePoints, drawingArea.Lines[2], drawingArea.Lines[1].P0.Y, drawingArea.Lines[0].P0.Y);
                 else if (e.Command == 4 && e.SubCommand == 1)
                     SetCurveFromLine(drawingArea.RightEdgeCurvePoints, drawingArea.Lines[3], drawingArea.Lines[1].P0.Y, drawingArea.Lines[0].P0.Y);
+                else if (e.Command == 1 || e.Command == 2)
+                    // keep the edges ending on the moved boundary so the change is visible right away
+                    SnapCurveEndpointsToBoundaries(
+                        drawingArea.LeftEdgeCurvePoints, drawingArea.RightEdgeCurvePoints,
+                        drawingArea.Lines[1], drawingArea.Lines[0]);
 
+                // the photo now needs re-normalizing; the old correction still locates the
+                // recorded errors, so Normalize can carry them over to the new geometry
+                if (e.SubCommand == 1)
+                    MarkPerspectiveDirty();
                 drawingArea.RenderNeeded = true;
             }
 
@@ -578,6 +590,7 @@ namespace PaveMetric
                 UpdateTitle();
                 UpdateControls();
                 EnsureLayersForProjectCodes();
+                _project.EnableUsedErrorTypes();
                 ApplyProjectErrorTypes();
                 _errorTypeToolbox.Populate();
             }
@@ -1094,16 +1107,40 @@ namespace PaveMetric
             List<Pos> leftPoints, List<Pos> rightPoints,
             Line nearBoundary, Line farBoundary)
         {
-            if (leftPoints != null && leftPoints.Count >= 2)
+            foreach (List<Pos> points in new[] { leftPoints, rightPoints })
             {
-                leftPoints[0].Y = nearBoundary.P0.Y;
-                leftPoints[leftPoints.Count - 1].Y = farBoundary.P0.Y;
+                if (points == null || points.Count < 2)
+                    continue;
+                MoveEndpointOntoLine(points[0], points[1], nearBoundary);
+                MoveEndpointOntoLine(points[points.Count - 1], points[points.Count - 2], farBoundary);
             }
-            if (rightPoints != null && rightPoints.Count >= 2)
+        }
+
+        /// <summary>
+        /// Slides an edge endpoint along its end segment (through <paramref name="neighbor"/>)
+        /// until it lies on <paramref name="boundary"/>, so a moved boundary extends or shortens
+        /// the edge instead of bending it. Falls back to moving only Y when they are parallel.
+        /// </summary>
+        private static void MoveEndpointOntoLine(Pos endpoint, Pos neighbor, Line boundary)
+        {
+            double bx = boundary.P1.X - boundary.P0.X, by = boundary.P1.Y - boundary.P0.Y;
+            double ex = endpoint.X - neighbor.X, ey = endpoint.Y - neighbor.Y;
+            double determinant = ex * by - ey * bx;
+            if (Math.Abs(determinant) > 1e-9)
             {
-                rightPoints[0].Y = nearBoundary.P1.Y;
-                rightPoints[rightPoints.Count - 1].Y = farBoundary.P1.Y;
+                double t = ((boundary.P0.X - neighbor.X) * by - (boundary.P0.Y - neighbor.Y) * bx) / determinant;
+                double x = neighbor.X + ex * t, y = neighbor.Y + ey * t;
+                if (double.IsFinite(x) && double.IsFinite(y) && t > 0)
+                {
+                    endpoint.X = x;
+                    endpoint.Y = y;
+                    return;
+                }
             }
+
+            endpoint.Y = Math.Abs(bx) > 1e-9
+                ? boundary.P0.Y + by * (endpoint.X - boundary.P0.X) / bx
+                : boundary.P0.Y;
         }
 
         private bool HasCurvedEdges()

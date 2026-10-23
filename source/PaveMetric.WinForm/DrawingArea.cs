@@ -655,6 +655,7 @@ namespace PaveMetric
                             Lines[0].P1.Y = y_Mouse;
                             command = 0;
                             RenderNeeded = true;
+                            RaiseCommandStateChanged(1, 1, x_Mouse, y_Mouse);
                             break;
                         case 2:
                             if (photo == null) break;
@@ -664,6 +665,7 @@ namespace PaveMetric
                             Lines[1].P1.Y = y_Mouse;
                             command = 0;
                             RenderNeeded = true;
+                            RaiseCommandStateChanged(2, 1, x_Mouse, y_Mouse);
                             break;
                         case 3:
                             if (subCommand == 0)
@@ -678,6 +680,7 @@ namespace PaveMetric
                             {
                                 command = 0;
                                 subCommand = 0;
+                                RaiseCommandStateChanged(3, 1, x_Mouse, y_Mouse);
                             }
                             RenderNeeded = true;
                             break;
@@ -694,6 +697,7 @@ namespace PaveMetric
                             {
                                 command = 0;
                                 subCommand = 0;
+                                RaiseCommandStateChanged(4, 1, x_Mouse, y_Mouse);
                             }
                             RenderNeeded = true;
                             break;

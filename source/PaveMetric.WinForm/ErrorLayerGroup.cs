@@ -43,6 +43,30 @@ namespace PaveMetric
             newLayer.BringToFront();
         }
 
+        Label emptyHint;
+
+        /// <summary>Shows <paramref name="text"/> in place of the list, or hides it when null.</summary>
+        public void SetEmptyHint(string text)
+        {
+            if (text == null)
+            {
+                if (emptyHint != null) emptyHint.Visible = false;
+                return;
+            }
+            emptyHint ??= new Label
+            {
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Theme.TextMuted,
+                Padding = new Padding(8),
+                Parent = this,
+            };
+            emptyHint.Text = text;
+            emptyHint.Visible = true;
+            // docked controls are laid out back to front: the fill must come last
+            emptyHint.BringToFront();
+        }
+
         public void RemoveLayer(ErrorLayerControl layer)
         {
             if (layer == null) return;

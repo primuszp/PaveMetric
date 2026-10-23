@@ -22,40 +22,41 @@ namespace PaveMetric
         public List<ErrorLayerControl> ErrorLayers = new List<ErrorLayerControl>();
 
         /// <summary>
-        /// Codes of the catalog types offered in this project's palette.
-        /// Null (new project, or one saved before this setting existed) means every type.
+        /// Codes of the catalog types ticked for this project; only these appear in the palette.
+        /// A new project starts with none, and is saved with the project file.
         /// </summary>
         [XmlIgnore]
-        public List<int> ErrorTypeCodes { get; set; }
+        public List<int> ErrorTypeCodes { get; private set; } = new List<int>();
 
-        /// <summary>
-        /// XML form of <see cref="ErrorTypeCodes"/>. An array (not the list) so that a missing
-        /// element stays null ("all types") instead of deserializing as an empty selection.
-        /// </summary>
+        /// <summary>XML form of <see cref="ErrorTypeCodes"/>; a missing element loads as no selection.</summary>
         [XmlArray("ErrorTypeCodes")]
         public int[] ErrorTypeCodesXml
         {
-            get => ErrorTypeCodes?.ToArray();
-            set => ErrorTypeCodes = value?.ToList();
+            get => ErrorTypeCodes.ToArray();
+            set => ErrorTypeCodes = value?.Distinct().ToList() ?? new List<int>();
         }
 
-        public bool IsErrorTypeEnabled(int code) => ErrorTypeCodes == null || ErrorTypeCodes.Contains(code);
+        public bool IsErrorTypeEnabled(int code) => ErrorTypeCodes.Contains(code);
 
         public void SetErrorTypeEnabled(int code, bool enabled)
         {
-            if (ErrorTypeCodes == null)
-            {
-                if (enabled) return;
-                // switching from "all" to an explicit list: start from the known types
-                ErrorTypeCodes = ErrorLayers.Select(l => l.ErrorCode).Distinct().ToList();
-            }
             if (enabled && !ErrorTypeCodes.Contains(code))
                 ErrorTypeCodes.Add(code);
             else if (!enabled)
                 ErrorTypeCodes.Remove(code);
         }
 
-        /// <summary>Types that must stay in the palette: enabled, or already used by a recorded error.</summary>
+        /// <summary>
+        /// Ticks every type that already has recorded errors, so a project saved before the
+        /// selection existed (or edited elsewhere) still shows the types it uses.
+        /// </summary>
+        public void EnableUsedErrorTypes()
+        {
+            foreach (int code in _photos.SelectMany(p => p.Errors).Select(e => e.ErrorCode).Distinct())
+                SetErrorTypeEnabled(code, true);
+        }
+
+        /// <summary>Types that must stay in the palette: ticked, or already used by a recorded error.</summary>
         public bool IsErrorTypeShown(int code) =>
             IsErrorTypeEnabled(code) || _photos.Any(p => p.Errors.Any(e => e.ErrorCode == code));
 

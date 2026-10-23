@@ -33,6 +33,8 @@ MetricRoadTests.Run();
 ErrorReprojectionTests.Run();
 NormalizationHistoryTests.Run();
 DimensionChangeTests.Run();
+BoundaryEditTests.Run();
+ProjectErrorTypeTests.Run();
 if (pilisPhotoPath != null && pilisOutputPath != null)
     ExportPilisTopView(pilisPhotoPath, pilisOutputPath);
 
